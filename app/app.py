@@ -7,6 +7,7 @@ from pathlib import Path
 import shutil
 import json
 import torch
+from datetime import datetime
 from diffusers import (
     CogVideoXDPMScheduler,
     CogvideoXBranchModel,
@@ -498,6 +499,12 @@ def generate_mask_video_with_trajectory(fg_element_path, source_video_path, outp
     else:
         key_frames = [0]
 
+    # 创建永久保存目录
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    permanent_mask_dir = os.path.join("./results/compositing_masks", timestamp)
+    permanent_mask_frames_dir = os.path.join(permanent_mask_dir, "frames")
+    ensure_directory_exists(permanent_mask_frames_dir)
+
     fourcc = cv2.VideoWriter_fourcc(*'mp4v')
     out_mask = cv2.VideoWriter(output_path, fourcc, fps, (source_width, source_height), isColor=False)
 
@@ -581,13 +588,29 @@ def generate_mask_video_with_trajectory(fg_element_path, source_video_path, outp
             cv2.fillPoly(final_mask, [shifted_contour.astype(np.int32)], 255)
 
         out_mask.write(final_mask)
+        
+        # 保存掩码帧到永久位置
+        mask_frame_path = os.path.join(permanent_mask_frames_dir, f"{frame_num:05d}.png")
+        cv2.imwrite(mask_frame_path, final_mask)
 
         frame_num += 1
 
     fg_cap.release()
     source_cap.release()
     out_mask.release()
-    return output_path, "Mask video generated successfully"
+    
+    # 保存掩码视频到永久位置
+    permanent_mask_video_path = os.path.join(permanent_mask_dir, "compositing_mask_video.mp4")
+    shutil.copy2(output_path, permanent_mask_video_path)
+    
+    success_message = (
+        f"Mask video generated successfully\n"
+        f"Compositing mask saved to: {permanent_mask_dir}\n"
+        f"- Video: {permanent_mask_video_path}\n"
+        f"- Frames: {permanent_mask_frames_dir} ({frame_num} frames)"
+    )
+    
+    return output_path, success_message
 
 def quick_freeze(model):
     for param in model.parameters():
