@@ -7,6 +7,7 @@ from pathlib import Path
 import shutil
 import json
 import torch
+from datetime import datetime
 from diffusers import (
     CogVideoXDPMScheduler,
     CogvideoXBranchModel,
@@ -207,13 +208,19 @@ def adjust_video_resolution(video_path, target_width=720, target_height=480, tar
     except Exception as e:
         return None, f"Adjustment Failed: {str(e)}"
 
-def process_foreground_video(fg_video, fg_points):
+def process_foreground_video(fg_video, fg_points, run_folder=None):
     """使用SAM2处理前景视频，基于用户点击的点"""
     if not fg_video or not fg_points:
-        return None, None, None, "Please provide a foreground video and at least one click point"
+        return None, None, None, None, "Please provide a foreground video and at least one click point"
 
     logger.info(f"Begin processing foreground video: {fg_video}")
     logger.info(f"Foreground Point: {fg_points}")
+    
+    # Create run folder if not exists
+    if run_folder is None:
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        run_folder = os.path.join("./results/runs", timestamp)
+    ensure_directory_exists(run_folder)
 
     # 调整视频分辨率
     adjusted_fg_video, status = adjust_video_resolution(
@@ -225,7 +232,7 @@ def process_foreground_video(fg_video, fg_points):
     )
 
     if not adjusted_fg_video:
-        return None, None, None, f"Foreground video adjustment failed: {status}"
+        return None, None, None, run_folder, f"Foreground video adjustment failed: {status}"
 
     # 创建临时目录
     temp_dir = tempfile.mkdtemp(prefix="fg_processing_")
@@ -241,7 +248,7 @@ def process_foreground_video(fg_video, fg_points):
         # 提取视频帧
         frame_count = extract_frames(adjusted_fg_video, frames_dir, 0, 100)
         if frame_count == 0:
-            return None, None, None, "Unable to extract video frame"
+            return None, None, None, run_folder, "Unable to extract video frame"
             
         # 初始化视频预测器状态
         inference_state = video_predictor.init_state(video_path=frames_dir)
@@ -317,19 +324,32 @@ def process_foreground_video(fg_video, fg_points):
         # 创建前景元素视频
         element_video_path = os.path.join(temp_dir, "element_video.mp4")
         if not create_video_from_frames(element_dir, element_video_path, fps=24):
-            return None, None, None, "Failed to create foreground element video"
+            return None, None, None, run_folder, "Failed to create foreground element video"
             
         # 创建掩码视频
         mask_video_path = os.path.join(temp_dir, "mask_video.mp4")
         if not create_video_from_frames(mask_dir, mask_video_path, fps=24):
-            return None, None, None, "Failed to create mask video"
-            
-        return adjusted_fg_video, mask_video_path, element_video_path, "Foreground video processing successful"
+            return None, None, None, run_folder, "Failed to create mask video"
+        
+        # Save segmented object video to run folder
+        segmented_video_path = os.path.join(run_folder, "1_segmented_object.mp4")
+        shutil.copy2(element_video_path, segmented_video_path)
+        
+        # Save first frame of segmented object
+        cap = cv2.VideoCapture(element_video_path)
+        ret, first_frame = cap.read()
+        cap.release()
+        if ret:
+            first_frame_path = os.path.join(run_folder, "2_segmented_first_frame.jpg")
+            cv2.imwrite(first_frame_path, first_frame)
+        
+        success_msg = f"Foreground processing successful\nRun folder: {run_folder}"
+        return adjusted_fg_video, mask_video_path, element_video_path, run_folder, success_msg
             
     except Exception as e:
         error_msg = f"Foreground video processing failed: {str(e)}"
         logger.error(error_msg)
-        return None, None, None, error_msg
+        return None, None, None, run_folder, error_msg
     finally:
         # 延迟清理 adjusted_fg_video，直到整个流程完成
         pass  # 移除 cleanup_temp_files([adjusted_fg_video])
@@ -460,7 +480,7 @@ def load_trajectory(trajectory_path):
     return trajectory
 
 def generate_mask_video_with_trajectory(fg_element_path, source_video_path, output_path, trajectory_path, scales=[1.0],
-                                        target_width=720, target_height=480, alignment="center"):
+                                        target_width=720, target_height=480, alignment="center", run_folder=None):
     """生成带轨迹的掩膜视频 - 使用前景元素视频而不是掩码视频，支持alignment参数和动态scales"""
     trajectory = load_trajectory(trajectory_path)
     if not trajectory:
@@ -497,6 +517,16 @@ def generate_mask_video_with_trajectory(fg_element_path, source_video_path, outp
         key_frames = [int(i * (frame_count - 1) / (n_scales - 1)) for i in range(n_scales)]
     else:
         key_frames = [0]
+
+    # Use run folder or create new one
+    if run_folder is None:
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        run_folder = os.path.join("./results/runs", timestamp)
+    ensure_directory_exists(run_folder)
+    
+    # Create mask frames directory in run folder
+    mask_frames_dir = os.path.join(run_folder, "mask_frames")
+    ensure_directory_exists(mask_frames_dir)
 
     fourcc = cv2.VideoWriter_fourcc(*'mp4v')
     out_mask = cv2.VideoWriter(output_path, fourcc, fps, (source_width, source_height), isColor=False)
@@ -581,13 +611,29 @@ def generate_mask_video_with_trajectory(fg_element_path, source_video_path, outp
             cv2.fillPoly(final_mask, [shifted_contour.astype(np.int32)], 255)
 
         out_mask.write(final_mask)
+        
+        # 保存掩码帧到run folder
+        mask_frame_path = os.path.join(mask_frames_dir, f"{frame_num:05d}.png")
+        cv2.imwrite(mask_frame_path, final_mask)
 
         frame_num += 1
 
     fg_cap.release()
     source_cap.release()
     out_mask.release()
-    return output_path, "Mask video generated successfully"
+    
+    # 保存掩码视频到run folder
+    mask_video_path = os.path.join(run_folder, "3_mask_video.mp4")
+    shutil.copy2(output_path, mask_video_path)
+    
+    success_message = (
+        f"Mask video generated successfully\n"
+        f"Mask saved to: {run_folder}\n"
+        f"- Video: 3_mask_video.mp4\n"
+        f"- Frames: mask_frames/ ({frame_num} frames)"
+    )
+    
+    return output_path, success_message
 
 def quick_freeze(model):
     for param in model.parameters():
@@ -698,6 +744,7 @@ def generate_video(
         long_video: bool = False,
         dilate_size: int = -1,
         id_adapter_resample_learnable_path: str = None,
+        run_folder: str = None,
 ):
     fps = 24
     # 使用固定提示词
@@ -736,6 +783,54 @@ def generate_video(
             )
             if len(video) < frames:
                 raise ValueError(f"video length is less than {frames}, len(video): {len(video)}")
+            
+            # Save the downsampled mask by reading the clean mask video and downsampling it
+            if run_folder and os.path.exists(mask_path):
+                # Read the clean 100-frame mask video
+                clean_mask_cap = cv2.VideoCapture(mask_path)
+                clean_fps = int(clean_mask_cap.get(cv2.CAP_PROP_FPS))
+                
+                downsampled_mask_frames_dir = os.path.join(run_folder, "mask_frames_49")
+                ensure_directory_exists(downsampled_mask_frames_dir)
+                
+                # Downsample the clean mask the same way as the video
+                frame_idx = 0
+                saved_idx = 0
+                clean_masks = []
+                
+                while frame_idx < 100:
+                    ret, mask_frame = clean_mask_cap.read()
+                    if not ret:
+                        break
+                    
+                    # Apply same downsampling logic
+                    if frame_idx % int(fps // down_sample_fps) == 0 and saved_idx < frames:
+                        if len(mask_frame.shape) == 3:
+                            mask_gray = cv2.cvtColor(mask_frame, cv2.COLOR_BGR2GRAY)
+                        else:
+                            mask_gray = mask_frame
+                        
+                        clean_masks.append(mask_gray)
+                        mask_frame_path = os.path.join(downsampled_mask_frames_dir, f"{saved_idx:05d}.png")
+                        cv2.imwrite(mask_frame_path, mask_gray)
+                        saved_idx += 1
+                    
+                    frame_idx += 1
+                
+                clean_mask_cap.release()
+                
+                # Create downsampled mask video from clean masks
+                downsampled_mask_video_path = os.path.join(run_folder, "4_mask_49frames.mp4")
+                if len(clean_masks) > 0:
+                    height, width = clean_masks[0].shape
+                    fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+                    out = cv2.VideoWriter(downsampled_mask_video_path, fourcc, 12, (width, height), isColor=False)
+                    for mask_frame in clean_masks:
+                        out.write(mask_frame)
+                    out.release()
+                
+                logger.info(f"Saved {len(clean_masks)}-frame clean mask to {run_folder}")
+            
             inpaint_outputs = pipe(
                 prompt=prompt,
                 num_videos_per_prompt=num_videos_per_prompt,
@@ -759,6 +854,22 @@ def generate_video(
             output_dir = './results'
             Path(output_dir).mkdir(parents=True, exist_ok=True)
             export_to_video(video_generate, output_path, fps=12)
+            
+            # Save final composited video and first frame to run folder
+            if run_folder:
+                final_video_path = os.path.join(run_folder, "5_final_composited.mp4")
+                shutil.copy2(output_path, final_video_path)
+                
+                # Save first frame of final video
+                cap = cv2.VideoCapture(output_path)
+                ret, first_frame = cap.read()
+                cap.release()
+                if ret:
+                    final_first_frame_path = os.path.join(run_folder, "6_final_first_frame.jpg")
+                    cv2.imwrite(final_first_frame_path, first_frame)
+                
+                return output_path, f"Video compositing successful\nAll outputs saved to: {run_folder}"
+            
             return output_path, "Video compositing successful"
         else:
             raise NotImplementedError
@@ -983,6 +1094,7 @@ with gr.Blocks(css=css) as demo:
     is_drawing_fg = gr.State(False)
     original_fg_frame = gr.State(None)
     inference_steps = gr.State(10)  # New state for inference steps
+    run_folder = gr.State(None)  # Track the current run folder
 
     with gr.Group(elem_classes="step-group"):
         gr.Markdown("### Using our video samples?")
@@ -1151,16 +1263,16 @@ with gr.Blocks(css=css) as demo:
                     outputs=[fg_first_frame, fg_points, is_drawing_fg, fg_status]
                 )
 
-                def process_fg_and_update_state(fg_video, fg_points):
-                    source, mask, element, status = process_foreground_video(fg_video, fg_points)
+                def process_fg_and_update_state(fg_video, fg_points, current_run_folder):
+                    source, mask, element, new_run_folder, status = process_foreground_video(fg_video, fg_points, current_run_folder)
                     debug_info = f"Path of element video: {element}, existing in: {os.path.exists(element) if element else False}"
                     status_with_debug = f"{status}\n{debug_info}"
-                    return element, element, source, mask, status_with_debug
+                    return element, element, source, mask, new_run_folder, status_with_debug
 
                 btn_process_fg.click(
                     fn=process_fg_and_update_state,
-                    inputs=[fg_video_input, fg_points],
-                    outputs=[fg_element_output, processed_fg_element, processed_fg_source, processed_fg_mask, fg_status]
+                    inputs=[fg_video_input, fg_points, run_folder],
+                    outputs=[fg_element_output, processed_fg_element, processed_fg_source, processed_fg_mask, run_folder, fg_status]
                 )
 
         with gr.Column(scale=3):
@@ -1410,7 +1522,7 @@ with gr.Blocks(css=css) as demo:
                         format="mp4"
                     )
 
-                def generate_final_mask(fg_element, bg_video, trajectory_path, rescale_list, alignment="center"):
+                def generate_final_mask(fg_element, bg_video, trajectory_path, rescale_list, current_run_folder, alignment="center"):
                     scales = [r for r in rescale_list if r is not None and r != 0]
                     if not scales:
                         scales = [0.4]
@@ -1418,22 +1530,22 @@ with gr.Blocks(css=css) as demo:
                         return None, None, "Please provide complete foreground element video, background video, and specified trajectory"
                     temp_output = tempfile.NamedTemporaryFile(suffix=".mp4", delete=False).name
                     mask_video, status = generate_mask_video_with_trajectory(fg_element, bg_video, temp_output,
-                                                                           trajectory_path, scales, alignment=alignment)
+                                                                           trajectory_path, scales, alignment=alignment, run_folder=current_run_folder)
                     return mask_video, mask_video, status
 
                 btn_generate_mask.click(
-                    fn=lambda fg, bg, traj, r1, r2, r3, r4, r5: generate_final_mask(fg, bg, traj, [r1, r2, r3, r4, r5], "center"),
-                    inputs=[processed_fg_element, processed_bg_video, trajectory_file, rescale1, rescale2, rescale3, rescale4, rescale5],
+                    fn=lambda fg, bg, traj, r1, r2, r3, r4, r5, rf: generate_final_mask(fg, bg, traj, [r1, r2, r3, r4, r5], rf, "center"),
+                    inputs=[processed_fg_element, processed_bg_video, trajectory_file, rescale1, rescale2, rescale3, rescale4, rescale5, run_folder],
                     outputs=[final_mask_output, final_mask_output_state, compose_status]
                 )
 
                 btn_generate_upper_mask.click(
-                    fn=lambda fg, bg, traj, r1, r2, r3, r4, r5: generate_final_mask(fg, bg, traj, [r1, r2, r3, r4, r5], "bottom"),
-                    inputs=[processed_fg_element, processed_bg_video, trajectory_file, rescale1, rescale2, rescale3, rescale4, rescale5],
+                    fn=lambda fg, bg, traj, r1, r2, r3, r4, r5, rf: generate_final_mask(fg, bg, traj, [r1, r2, r3, r4, r5], rf, "bottom"),
+                    inputs=[processed_fg_element, processed_bg_video, trajectory_file, rescale1, rescale2, rescale3, rescale4, rescale5, run_folder],
                     outputs=[final_mask_output, final_mask_output_state, compose_status]
                 )
 
-                def compose_video(fg_element, bg_video, mask_video, inference_steps):
+                def compose_video(fg_element, bg_video, mask_video, inference_steps, current_run_folder):
                     if not fg_element or not bg_video or not mask_video:
                         return None, "Please ensure that foreground element video, background video and final mask video are provided"
                     temp_output = tempfile.NamedTemporaryFile(suffix=".mp4", delete=False).name
@@ -1464,6 +1576,7 @@ with gr.Blocks(css=css) as demo:
                             long_video=False,
                             dilate_size=-1,
                             id_adapter_resample_learnable_path=None,
+                            run_folder=current_run_folder,
                         )
                         return output_path, status
                     except Exception as e:
@@ -1473,7 +1586,7 @@ with gr.Blocks(css=css) as demo:
 
                 btn_compose_video.click(
                     fn=compose_video,
-                    inputs=[processed_fg_element, processed_bg_video, final_mask_output_state, inference_steps_input],
+                    inputs=[processed_fg_element, processed_bg_video, final_mask_output_state, inference_steps_input, run_folder],
                     outputs=[composed_video_output, compose_status]
                 )
 
