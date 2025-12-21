@@ -394,6 +394,56 @@ def draw_trajectory_on_frame(frame, points, cam_dist, cam_height, cam_fov):
 
     return display
 
+
+def draw_trajectory_2d_on_frame(frame, points_2d):
+    """Draw 2D trajectory points on video frame.
+
+    Args:
+        frame: RGB image (H, W, 3)
+        points_2d: List of (x, y) pixel coordinates
+
+    Returns:
+        frame with trajectory drawn
+    """
+    if frame is None:
+        return None
+
+    display = frame.copy()
+
+    # Draw trajectory line
+    if len(points_2d) > 1:
+        for i in range(len(points_2d) - 1):
+            pt1 = (int(points_2d[i][0]), int(points_2d[i][1]))
+            pt2 = (int(points_2d[i + 1][0]), int(points_2d[i + 1][1]))
+            cv2.line(display, pt1, pt2, (255, 255, 0), 2, cv2.LINE_AA)
+
+    # Draw points with numbers
+    for i, (px, py) in enumerate(points_2d):
+        pt = (int(px), int(py))
+
+        # Draw point (green circle)
+        cv2.circle(display, pt, 10, (0, 255, 0), -1)
+        cv2.circle(display, pt, 10, (0, 0, 0), 2)
+
+        # Draw point number
+        cv2.putText(display, str(i + 1), (pt[0] + 12, pt[1] + 5),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
+        cv2.putText(display, str(i + 1), (pt[0] + 12, pt[1] + 5),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 0), 1)
+
+    # Mark start (green outline) and end (red outline)
+    if len(points_2d) > 0:
+        start_pt = (int(points_2d[0][0]), int(points_2d[0][1]))
+        cv2.circle(display, start_pt, 15, (0, 255, 0), 3)
+
+        if len(points_2d) > 1:
+            end_pt = (int(points_2d[-1][0]), int(points_2d[-1][1]))
+            cv2.rectangle(display, (end_pt[0] - 12, end_pt[1] - 12),
+                          (end_pt[0] + 12, end_pt[1] + 12), (255, 0, 0), 3)
+
+    return display
+
+
 def passthrough(video_path):
     return video_path
 
@@ -2218,34 +2268,20 @@ with gr.Blocks(css=css) as demo:
 
         with gr.Row():
             with gr.Column(scale=1):
-                gr.Markdown("### 3D Trajectory Input")
+                gr.Markdown("### 2D Trajectory Input")
+                gr.Markdown("*Depth will be inferred via Depth Anything during processing*")
                 with gr.Tabs():
-                    with gr.TabItem("Text Input"):
-                        trajectory_3d_input = gr.TextArea(
-                            label="3D Keypoints (x, y, z per line)",
-                            placeholder="# World coordinates: origin at scene center, Y=up\n# Example trajectory:\n-2.0, 0.0, 0.0\n0.0, 1.0, 0.0\n2.0, 0.0, 0.0",
-                            lines=6,
-                            info="Enter x,y,z coordinates per line. Will be interpolated to 49 frames."
-                        )
-                        trajectory_3d_file = gr.File(
-                            label="Or upload 3D trajectory file (.txt)",
-                            file_types=[".txt"]
-                        )
                     with gr.TabItem("Draw Trajectory"):
-                        gr.Markdown("**Draw on Background 0° (Front view). Click to add 3D points.**")
-                        gr.Markdown("Click position = X,Y in image. Use slider for Z (depth).")
-                        traj_draw_z_depth = gr.Slider(label="Z (Depth: -=closer to camera, +=farther)", minimum=-5.0, maximum=5.0, value=0.0, step=0.1)
-                        traj_draw_points = gr.State([])  # List of (x, y, z) tuples
+                        gr.Markdown("**Draw on Background 0° (Front view). Click to add 2D points.**")
+                        gr.Markdown("Depth is automatically inferred from Depth Anything + background depth.")
+                        traj_draw_points = gr.State([])  # List of (x, y) tuples - 2D only!
                         traj_draw_original_frame = gr.State(None)  # Store original bg frame
-                        traj_draw_canvas = gr.Image(label="Click to add trajectory points (X,Y from click, Z from slider)", height=350, interactive=True)
+                        traj_draw_canvas = gr.Image(label="Click to add trajectory points (2D)", height=350, interactive=True)
                         with gr.Row():
                             btn_traj_draw_start = gr.Button("Load BG & Start", variant="primary", size="sm")
                             btn_traj_draw_undo = gr.Button("Undo Last", variant="secondary", size="sm")
                             btn_traj_draw_clear = gr.Button("Clear All", variant="secondary", size="sm")
-                            btn_traj_draw_apply = gr.Button("Apply to Input", variant="primary", size="sm")
                         traj_draw_status = gr.Textbox(label="Drawing Status", interactive=False, lines=1, show_label=False)
-
-                btn_visualize_traj = gr.Button("Visualize 3D Trajectory", variant="primary", size="sm")
 
             with gr.Column(scale=1):
                 gr.Markdown("### Camera Parameters")
@@ -2266,6 +2302,10 @@ with gr.Blocks(css=css) as demo:
             mv_bg_180 = gr.Video(label="Background 180° (Back)", height=200)
             mv_bg_270 = gr.Video(label="Background 270° (Left)", height=200)
 
+        gr.Markdown("### Depth Video (from 4DGS)")
+        gr.Markdown("*Upload depth for View 0° only. Used to lift 2D trajectory to 3D.*")
+        mv_depth_0 = gr.File(label="Depth 0° (.npy) - Shape: (num_frames, H, W), values in meters", file_types=[".npy"])
+
         gr.Markdown("### Foreground Videos (4 camera angles)")
         with gr.Row():
             mv_fg_0 = gr.Video(label="Foreground 0° (Front)", height=200)
@@ -2285,8 +2325,8 @@ with gr.Blocks(css=css) as demo:
 
         with gr.Row():
             with gr.Column():
-                gr.Markdown("**View 0° (Front)**")
-                mv_fg_frame_0 = gr.Image(label="Click to select object (0°)", height=180, interactive=True)
+                gr.Markdown("**View 0° (Front)** - Click to select object")
+                mv_fg_frame_0 = gr.Image(label=None, show_label=False, height=180, interactive=True)
                 with gr.Row():
                     btn_mv_fg_start_0 = gr.Button("Start", variant="secondary", size="sm")
                     btn_mv_fg_clear_0 = gr.Button("Clear", variant="secondary", size="sm")
@@ -2298,8 +2338,8 @@ with gr.Blocks(css=css) as demo:
                 mv_fg_element_0 = gr.Video(label="Segmented Output (0°)", height=150)
 
             with gr.Column():
-                gr.Markdown("**View 90° (Right)**")
-                mv_fg_frame_90 = gr.Image(label="Click to select object (90°)", height=180, interactive=True)
+                gr.Markdown("**View 90° (Right)** - Click to select object")
+                mv_fg_frame_90 = gr.Image(label=None, show_label=False, height=180, interactive=True)
                 with gr.Row():
                     btn_mv_fg_start_90 = gr.Button("Start", variant="secondary", size="sm")
                     btn_mv_fg_clear_90 = gr.Button("Clear", variant="secondary", size="sm")
@@ -2311,8 +2351,8 @@ with gr.Blocks(css=css) as demo:
                 mv_fg_element_90 = gr.Video(label="Segmented Output (90°)", height=150)
 
             with gr.Column():
-                gr.Markdown("**View 180° (Back)**")
-                mv_fg_frame_180 = gr.Image(label="Click to select object (180°)", height=180, interactive=True)
+                gr.Markdown("**View 180° (Back)** - Click to select object")
+                mv_fg_frame_180 = gr.Image(label=None, show_label=False, height=180, interactive=True)
                 with gr.Row():
                     btn_mv_fg_start_180 = gr.Button("Start", variant="secondary", size="sm")
                     btn_mv_fg_clear_180 = gr.Button("Clear", variant="secondary", size="sm")
@@ -2324,8 +2364,8 @@ with gr.Blocks(css=css) as demo:
                 mv_fg_element_180 = gr.Video(label="Segmented Output (180°)", height=150)
 
             with gr.Column():
-                gr.Markdown("**View 270° (Left)**")
-                mv_fg_frame_270 = gr.Image(label="Click to select object (270°)", height=180, interactive=True)
+                gr.Markdown("**View 270° (Left)** - Click to select object")
+                mv_fg_frame_270 = gr.Image(label=None, show_label=False, height=180, interactive=True)
                 with gr.Row():
                     btn_mv_fg_start_270 = gr.Button("Start", variant="secondary", size="sm")
                     btn_mv_fg_clear_270 = gr.Button("Clear", variant="secondary", size="sm")
@@ -2346,17 +2386,10 @@ with gr.Blocks(css=css) as demo:
             mv_output_180 = gr.Video(label="Output 180°", height=250, autoplay=True)
             mv_output_270 = gr.Video(label="Output 270°", height=250, autoplay=True)
 
-        # Trajectory visualization button handler
-        btn_visualize_traj.click(
-            fn=visualize_3d_trajectory,
-            inputs=[trajectory_3d_input, trajectory_3d_file, camera_distance, camera_height],
-            outputs=[trajectory_3d_plot]
-        )
-
         # Trajectory drawing handlers
         traj_draw_is_drawing = gr.State(False)
 
-        def traj_draw_start(bg_video, cam_dist, cam_height, cam_fov):
+        def traj_draw_start(bg_video):
             """Initialize the drawing canvas with background video frame"""
             if not bg_video:
                 return None, None, [], False, "Please upload Background 0° video first"
@@ -2370,16 +2403,14 @@ with gr.Blocks(css=css) as demo:
             frame_rgb = frame_rgb[:, :, ::-1]  # BGR to RGB
 
             # Draw empty trajectory overlay
-            canvas = draw_trajectory_on_frame(frame_rgb, [], cam_dist, cam_height, cam_fov)
+            canvas = draw_trajectory_2d_on_frame(frame_rgb, [])
 
-            return canvas, frame_rgb, [], True, "Click on the video to add trajectory points. X,Y from click, Z from slider."
+            return canvas, frame_rgb, [], True, "Click on the video to add 2D trajectory points. Depth will be inferred during processing."
 
-        def traj_draw_add_point(evt: gr.SelectData, original_frame, points, z_depth, cam_dist, cam_height, cam_fov, is_drawing):
-            """Add a point when canvas is clicked - X,Y from click, Z from slider"""
+        def traj_draw_add_point(evt: gr.SelectData, original_frame, points, is_drawing):
+            """Add a point when canvas is clicked - store only 2D pixel coordinates"""
             if not is_drawing or original_frame is None:
                 return original_frame, points, "Click 'Load BG & Start' first"
-
-            import math
 
             # Get click position in image coordinates
             px, py = evt.index
@@ -2389,87 +2420,51 @@ with gr.Blocks(css=css) as demo:
             px = max(0, min(w - 1, px))
             py = max(0, min(h - 1, py))
 
-            # Convert 2D click to 3D world coordinates
-            # For 0° camera looking at origin from -Z direction:
-            # - Image X maps to world X (from click)
-            # - Image Y maps to world Y (from click, inverted)
-            # - Z depth is set by slider
+            # Store 2D point
+            new_points = points + [(px, py)]
+            canvas = draw_trajectory_2d_on_frame(original_frame, new_points)
 
-            fov_rad = math.radians(cam_fov)
-            focal_length = h / (2 * math.tan(fov_rad / 2))
-            cx, cy = w / 2, h / 2
+            return canvas, new_points, f"Point {len(new_points)}: ({px}, {py})"
 
-            # Distance from camera to the point (along Z)
-            # The point is at z_depth in world coords, camera is at -cam_dist
-            z_world = z_depth
-            dist_to_point = z_world - (-cam_dist)  # = z_depth + cam_dist
-
-            if dist_to_point <= 0.1:
-                return draw_trajectory_on_frame(original_frame, points, cam_dist, cam_height, cam_fov), points, "Z depth too close to camera"
-
-            # Unproject: from pixel to world - X and Y from click position
-            x_world = (px - cx) * dist_to_point / focal_length
-            y_world = -(py - cy) * dist_to_point / focal_length + cam_height
-
-            new_points = points + [(round(x_world, 2), round(y_world, 2), round(z_world, 2))]
-            canvas = draw_trajectory_on_frame(original_frame, new_points, cam_dist, cam_height, cam_fov)
-
-            return canvas, new_points, f"Point {len(new_points)}: X={x_world:.2f}, Y={y_world:.2f}, Z={z_world:.2f}"
-
-        def traj_draw_undo(original_frame, points, cam_dist, cam_height, cam_fov):
+        def traj_draw_undo(original_frame, points):
             """Remove the last point"""
             if original_frame is None:
                 return None, [], "No canvas loaded"
             if not points:
-                return draw_trajectory_on_frame(original_frame, [], cam_dist, cam_height, cam_fov), [], "No points to undo"
+                return draw_trajectory_2d_on_frame(original_frame, []), [], "No points to undo"
             new_points = points[:-1]
-            canvas = draw_trajectory_on_frame(original_frame, new_points, cam_dist, cam_height, cam_fov)
+            canvas = draw_trajectory_2d_on_frame(original_frame, new_points)
             return canvas, new_points, f"Removed last point. {len(new_points)} points remaining."
 
-        def traj_draw_clear(original_frame, cam_dist, cam_height, cam_fov):
+        def traj_draw_clear(original_frame):
             """Clear all points"""
             if original_frame is None:
                 return None, None, [], False, "No canvas loaded"
-            canvas = draw_trajectory_on_frame(original_frame, [], cam_dist, cam_height, cam_fov)
+            canvas = draw_trajectory_2d_on_frame(original_frame, [])
             return canvas, original_frame, [], False, "Cleared. Click 'Load BG & Start' to begin again."
-
-        def traj_draw_apply(points):
-            """Convert drawn points to text format for the input field"""
-            if not points:
-                return "", "No points to apply"
-            lines = ["#3D"]
-            for x, y, z in points:
-                lines.append(f"{x}, {y}, {z}")
-            return "\n".join(lines), f"Applied {len(points)} points to text input. Click 'Visualize' to preview in 3D."
 
         btn_traj_draw_start.click(
             fn=traj_draw_start,
-            inputs=[mv_bg_0, camera_distance, camera_height, camera_fov],
+            inputs=[mv_bg_0],
             outputs=[traj_draw_canvas, traj_draw_original_frame, traj_draw_points, traj_draw_is_drawing, traj_draw_status]
         )
 
         traj_draw_canvas.select(
             fn=traj_draw_add_point,
-            inputs=[traj_draw_original_frame, traj_draw_points, traj_draw_z_depth, camera_distance, camera_height, camera_fov, traj_draw_is_drawing],
+            inputs=[traj_draw_original_frame, traj_draw_points, traj_draw_is_drawing],
             outputs=[traj_draw_canvas, traj_draw_points, traj_draw_status]
         )
 
         btn_traj_draw_undo.click(
             fn=traj_draw_undo,
-            inputs=[traj_draw_original_frame, traj_draw_points, camera_distance, camera_height, camera_fov],
+            inputs=[traj_draw_original_frame, traj_draw_points],
             outputs=[traj_draw_canvas, traj_draw_points, traj_draw_status]
         )
 
         btn_traj_draw_clear.click(
             fn=traj_draw_clear,
-            inputs=[traj_draw_original_frame, camera_distance, camera_height, camera_fov],
+            inputs=[traj_draw_original_frame],
             outputs=[traj_draw_canvas, traj_draw_original_frame, traj_draw_points, traj_draw_is_drawing, traj_draw_status]
-        )
-
-        btn_traj_draw_apply.click(
-            fn=traj_draw_apply,
-            inputs=[traj_draw_points],
-            outputs=[trajectory_3d_input, traj_draw_status]
         )
 
         # Helper: get first frame and store original
@@ -2576,40 +2571,142 @@ with gr.Blocks(css=css) as demo:
         btn_mv_segment_180.click(fn=lambda v, p, s: mv_segment_single(v, p, s, 180), inputs=[mv_fg_180, mv_fg_points_180, mv_fg_segmented], outputs=[mv_fg_element_180, mv_fg_segmented, mv_fg_status_180])
         btn_mv_segment_270.click(fn=lambda v, p, s: mv_segment_single(v, p, s, 270), inputs=[mv_fg_270, mv_fg_points_270, mv_fg_segmented], outputs=[mv_fg_element_270, mv_fg_segmented, mv_fg_status_270])
 
-        def process_multiview_batch(traj_text, traj_file, bg_0, bg_90, bg_180, bg_270, fg_0, fg_90, fg_180, fg_270,
+        def process_multiview_batch(traj_points_2d, bg_0, bg_90, bg_180, bg_270,
+                                    depth_0,
+                                    fg_0, fg_90, fg_180, fg_270,
                                     pts_0, pts_90, pts_180, pts_270, seg_0, seg_90, seg_180, seg_270,
                                     cam_dist, cam_h, cam_fov, rescale, steps):
-            from infer.trajectory_3d import (parse_trajectory_3d_text, load_trajectory_3d, interpolate_3d_trajectory,
-                                             project_trajectory_to_views, get_camera_configs, save_trajectory_2d, Trajectory3D)
+            """Process multi-view compositing with depth completion.
+
+            Pipeline:
+            1. Draw 2D trajectory on View 0
+            2. Sample depth from View 0 depth video
+            3. Lift to 3D and project to other views
+            """
+            from infer.trajectory_3d import (Camera, CameraConfig, get_camera_configs,
+                                             save_trajectory_2d, interpolate_3d_trajectory, Trajectory3D,
+                                             project_trajectory_to_views)
+            from infer.depth_utils import (load_depth_video, run_depth_anything,
+                                          align_depth_to_metric, extract_object_depth_at_trajectory)
+
             results = {0: None, 90: None, 180: None, 270: None}
             status_lines = []
 
-            try:
-                if traj_file is not None:
-                    trajectory_3d = load_trajectory_3d(traj_file.name)
-                    status_lines.append(f"Loaded 3D trajectory: {len(trajectory_3d.points)} points")
-                elif traj_text and traj_text.strip():
-                    trajectory_3d = parse_trajectory_3d_text(traj_text)
-                    status_lines.append(f"Parsed 3D trajectory: {len(trajectory_3d.points)} points")
+            # Validate 2D trajectory
+            if not traj_points_2d or len(traj_points_2d) == 0:
+                return None, None, None, None, "Error: Please draw a 2D trajectory first (click on Background 0°)"
+
+            status_lines.append(f"2D Trajectory: {len(traj_points_2d)} keypoints")
+
+            # Interpolate 2D trajectory to 49 frames if needed
+            if len(traj_points_2d) < 49:
+                # Linear interpolation for 2D points
+                import numpy as np
+                points = np.array(traj_points_2d)
+                if len(points) == 1:
+                    traj_2d_interpolated = [tuple(points[0])] * 49
                 else:
-                    return None, None, None, None, "Error: Please provide 3D trajectory"
-            except Exception as e:
-                return None, None, None, None, f"Error parsing trajectory: {str(e)}"
-
-            if len(trajectory_3d.points) == 0:
-                return None, None, None, None, "Error: No valid points found"
-
-            if len(trajectory_3d.points) < 49:
-                trajectory_3d = Trajectory3D(points=interpolate_3d_trajectory(trajectory_3d.points, 49), num_frames=49)
+                    t_orig = np.linspace(0, 1, len(points))
+                    t_new = np.linspace(0, 1, 49)
+                    x_interp = np.interp(t_new, t_orig, points[:, 0])
+                    y_interp = np.interp(t_new, t_orig, points[:, 1])
+                    traj_2d_interpolated = [(int(x), int(y)) for x, y in zip(x_interp, y_interp)]
                 status_lines.append("Interpolated to 49 frames")
+            else:
+                traj_2d_interpolated = [(int(p[0]), int(p[1])) for p in traj_points_2d[:49]]
 
+            # Load depth video for view 0 (required for depth completion)
+            depth_video_0 = None
+            if depth_0 is not None:
+                try:
+                    depth_video_0 = load_depth_video(depth_0.name)
+                    status_lines.append(f"Loaded depth video 0°: shape {depth_video_0.shape}")
+                except Exception as e:
+                    status_lines.append(f"Warning: Could not load depth 0°: {e}")
+
+            # Create camera configurations
             camera_configs = get_camera_configs(distance=cam_dist, height=cam_h, fov=cam_fov)
-            projected = project_trajectory_to_views(trajectory_3d, camera_configs)
-            status_lines.append("Projected to all 4 views")
+            cameras = [Camera(cfg) for cfg in camera_configs]
 
             # Use pre-segmented videos if available
             segmented_vids = {0: seg_0, 90: seg_90, 180: seg_180, 270: seg_270}
 
+            # If we have depth video and can do depth completion, lift to 3D
+            if depth_video_0 is not None:
+                status_lines.append("Using Depth Anything for depth completion...")
+
+                try:
+                    # For simplicity, sample depth at each trajectory point from the background depth
+                    # Then lift to 3D and project to all views
+
+                    # Get element video to run depth estimation on
+                    element_0 = segmented_vids.get(0)
+                    if not element_0:
+                        status_lines.append("Note: No pre-segmented element for view 0°, using background depth directly")
+
+                    # Lift 2D trajectory to 3D using depth
+                    points_3d = []
+                    for frame_idx, (px, py) in enumerate(traj_2d_interpolated):
+                        # Get depth at this frame
+                        if frame_idx < len(depth_video_0):
+                            depth_frame = depth_video_0[frame_idx]
+                        else:
+                            depth_frame = depth_video_0[-1]  # Use last frame if trajectory is longer
+
+                        # Sample depth at trajectory point (simple version without Depth Anything)
+                        # For full pipeline, would composite element first, run Depth Anything, align, then extract
+                        h, w = depth_frame.shape[:2]
+                        # Scale coordinates if needed
+                        scale_x = w / 720
+                        scale_y = h / 480
+                        depth_x = int(px * scale_x)
+                        depth_y = int(py * scale_y)
+                        depth_x = max(0, min(w-1, depth_x))
+                        depth_y = max(0, min(h-1, depth_y))
+
+                        # Get depth value (with small neighborhood for robustness)
+                        radius = 3
+                        y1 = max(0, depth_y - radius)
+                        y2 = min(h, depth_y + radius + 1)
+                        x1 = max(0, depth_x - radius)
+                        x2 = min(w, depth_x + radius + 1)
+                        neighborhood = depth_frame[y1:y2, x1:x2]
+                        valid_depths = neighborhood[neighborhood > 0.01]
+                        if len(valid_depths) > 0:
+                            depth_val = float(np.median(valid_depths))
+                        else:
+                            depth_val = 5.0  # Default depth
+
+                        # Lift to 3D
+                        try:
+                            x_world, y_world, z_world = cameras[0].lift_2d_to_3d(px, py, depth_val)
+                            points_3d.append((x_world, y_world, z_world))
+                        except ValueError:
+                            # Use previous point or default
+                            if points_3d:
+                                points_3d.append(points_3d[-1])
+                            else:
+                                points_3d.append((0.0, 0.0, 0.0))
+
+                    status_lines.append(f"Lifted to 3D: {len(points_3d)} points")
+
+                    # Create 3D trajectory and project to all views
+                    trajectory_3d = Trajectory3D(points=points_3d, num_frames=len(points_3d))
+                    projected = project_trajectory_to_views(trajectory_3d, camera_configs)
+                    status_lines.append("Projected to all 4 views")
+
+                except Exception as e:
+                    status_lines.append(f"Warning: Depth completion failed: {e}")
+                    # Fallback: use same 2D trajectory for all views
+                    projected = {0: traj_2d_interpolated, 90: traj_2d_interpolated,
+                                180: traj_2d_interpolated, 270: traj_2d_interpolated}
+            else:
+                # No depth video - use same 2D trajectory for all views (fallback)
+                status_lines.append("No depth video provided - using 2D trajectory for view 0° only")
+                projected = {0: traj_2d_interpolated, 90: traj_2d_interpolated,
+                            180: traj_2d_interpolated, 270: traj_2d_interpolated}
+
+            # Process each view
             for angle, bg_vid, fg_vid, fg_pts in [(0, bg_0, fg_0, pts_0), (90, bg_90, fg_90, pts_90),
                                                    (180, bg_180, fg_180, pts_180), (270, bg_270, fg_270, pts_270)]:
                 if not bg_vid:
@@ -2673,7 +2770,8 @@ with gr.Blocks(css=css) as demo:
 
         btn_process_multiview.click(
             fn=process_multiview_batch,
-            inputs=[trajectory_3d_input, trajectory_3d_file, mv_bg_0, mv_bg_90, mv_bg_180, mv_bg_270,
+            inputs=[traj_draw_points, mv_bg_0, mv_bg_90, mv_bg_180, mv_bg_270,
+                    mv_depth_0,
                     mv_fg_0, mv_fg_90, mv_fg_180, mv_fg_270, mv_fg_points_0, mv_fg_points_90,
                     mv_fg_points_180, mv_fg_points_270, mv_fg_element_0, mv_fg_element_90,
                     mv_fg_element_180, mv_fg_element_270, camera_distance, camera_height, camera_fov,

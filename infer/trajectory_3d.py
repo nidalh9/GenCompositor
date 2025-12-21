@@ -187,6 +187,55 @@ class Camera:
 
         return (u, v)
 
+    def lift_2d_to_3d(
+        self,
+        u: float,
+        v: float,
+        depth: float
+    ) -> Tuple[float, float, float]:
+        """
+        Inverse of project_3d_to_2d - lifts pixel + depth to world coordinates.
+
+        This unprojects a 2D pixel coordinate plus depth value back to 3D world space.
+        Uses the camera's intrinsics and view matrix to perform the transformation.
+
+        Args:
+            u: Pixel x coordinate
+            v: Pixel y coordinate
+            depth: Depth value in camera Z direction (meters)
+
+        Returns:
+            Tuple of (x_world, y_world, z_world) in world coordinates
+
+        Raises:
+            ValueError: If depth is invalid (<=0)
+        """
+        if depth <= 0.01:
+            raise ValueError(f"Invalid depth: {depth}. Depth must be positive.")
+
+        # Get intrinsics
+        fx = self.intrinsic_matrix[0, 0]
+        fy = self.intrinsic_matrix[1, 1]
+        cx = self.intrinsic_matrix[0, 2]
+        cy = self.intrinsic_matrix[1, 2]
+
+        # Unproject to camera coordinates
+        # From pinhole model: u = fx * X/Z + cx, v = fy * Y/Z + cy
+        # Inverse: X = (u - cx) * Z / fx, Y = (v - cy) * Z / fy
+        X_cam = (u - cx) * depth / fx
+        Y_cam = (v - cy) * depth / fy
+        Z_cam = depth
+
+        # Point in camera coordinates (homogeneous)
+        point_cam = np.array([X_cam, Y_cam, Z_cam, 1.0])
+
+        # Transform from camera to world coordinates
+        # Since view_matrix transforms world->camera, we need its inverse
+        view_inv = np.linalg.inv(self.view_matrix)
+        point_world = view_inv @ point_cam
+
+        return (float(point_world[0]), float(point_world[1]), float(point_world[2]))
+
 
 # Default camera configurations for 4-view setup
 DEFAULT_CAMERA_DISTANCE = 10.0
