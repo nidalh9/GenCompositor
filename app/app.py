@@ -85,13 +85,314 @@ def get_first_frame(video_path):
     """获取视频的第一帧"""
     if not video_path or not os.path.exists(video_path):
         return None
-        
+
     cap = cv2.VideoCapture(video_path)
     ret, frame = cap.read()
     cap.release()
     if ret and frame is not None:
         return frame  # Keep in BGR for OpenCV compatibility
     return None
+
+def visualize_3d_trajectory(traj_text, traj_file, cam_dist, cam_height):
+    """Render 3D trajectory with camera positions using matplotlib"""
+    import matplotlib
+    matplotlib.use('Agg')
+    import matplotlib.pyplot as plt
+    from mpl_toolkits.mplot3d import Axes3D
+    from io import BytesIO
+    import math
+
+    try:
+        # Parse trajectory
+        points = []
+        if traj_file is not None:
+            # Handle Gradio file upload object
+            file_path = traj_file.name if hasattr(traj_file, 'name') else traj_file
+            logger.info(f"Reading trajectory from file: {file_path}")
+            with open(file_path, 'r') as f:
+                for line in f:
+                    line = line.strip()
+                    if line and not line.startswith('#'):
+                        parts = line.split(',')
+                        if len(parts) >= 3:
+                            x, y, z = map(float, parts[:3])
+                            points.append((x, y, z))
+        elif traj_text and traj_text.strip():
+            logger.info(f"Parsing trajectory from text input")
+            for line in traj_text.strip().split('\n'):
+                line = line.strip()
+                if line and not line.startswith('#'):
+                    parts = line.split(',')
+                    if len(parts) >= 3:
+                        x, y, z = map(float, parts[:3])
+                        points.append((x, y, z))
+
+        logger.info(f"Parsed {len(points)} trajectory points")
+
+        if not points:
+            logger.warning("No trajectory points found to visualize")
+            # Create a simple message image instead of returning None
+            fig, ax = plt.subplots(figsize=(10, 8))
+            ax.text(0.5, 0.5, 'No trajectory points found.\n\nPlease enter 3D coordinates in the format:\nx, y, z\n\nExample:\n-2.0, 0.0, 0.0\n0.0, 1.0, 0.0\n2.0, 0.0, 0.0',
+                   ha='center', va='center', fontsize=14, transform=ax.transAxes)
+            ax.set_xlim(0, 1)
+            ax.set_ylim(0, 1)
+            ax.axis('off')
+            buf = BytesIO()
+            plt.savefig(buf, format='png', dpi=100, bbox_inches='tight')
+            buf.seek(0)
+            plt.close(fig)
+            from PIL import Image
+            return np.array(Image.open(buf))
+
+        # Create figure with 3D plot
+        fig = plt.figure(figsize=(10, 8))
+        ax = fig.add_subplot(111, projection='3d')
+
+        # Extract coordinates
+        xs = [p[0] for p in points]
+        ys = [p[1] for p in points]
+        zs = [p[2] for p in points]
+
+        # Plot trajectory as line and points
+        ax.plot(xs, zs, ys, 'b-', linewidth=2, label='Trajectory')
+        ax.scatter(xs, zs, ys, c='blue', s=50, alpha=0.8)
+
+        # Mark start and end
+        ax.scatter([xs[0]], [zs[0]], [ys[0]], c='green', s=150, marker='o', label='Start')
+        ax.scatter([xs[-1]], [zs[-1]], [ys[-1]], c='red', s=150, marker='s', label='End')
+
+        # Draw cameras at 4 positions
+        R = cam_dist
+        h = cam_height
+        camera_positions = {
+            '0° (Front)': (0, -R, h),
+            '90° (Right)': (R, 0, h),
+            '180° (Back)': (0, R, h),
+            '270° (Left)': (-R, 0, h)
+        }
+        camera_colors = {'0° (Front)': 'purple', '90° (Right)': 'orange', '180° (Back)': 'cyan', '270° (Left)': 'magenta'}
+
+        for name, (cx, cz, cy) in camera_positions.items():
+            ax.scatter([cx], [cz], [cy], c=camera_colors[name], s=200, marker='^', label=name)
+            # Draw line from camera to origin
+            ax.plot([cx, 0], [cz, 0], [cy, 0], color=camera_colors[name], linestyle='--', alpha=0.3)
+
+        # Draw origin
+        ax.scatter([0], [0], [0], c='black', s=100, marker='x', label='Origin')
+
+        # Draw coordinate axes
+        axis_len = max(R, max(abs(min(xs)), abs(max(xs)), abs(min(ys)), abs(max(ys)), abs(min(zs)), abs(max(zs)))) * 1.2
+        ax.plot([0, axis_len], [0, 0], [0, 0], 'r-', linewidth=1, alpha=0.5)
+        ax.plot([0, 0], [0, axis_len], [0, 0], 'b-', linewidth=1, alpha=0.5)
+        ax.plot([0, 0], [0, 0], [0, axis_len], 'g-', linewidth=1, alpha=0.5)
+        ax.text(axis_len, 0, 0, 'X', color='red')
+        ax.text(0, axis_len, 0, 'Z', color='blue')
+        ax.text(0, 0, axis_len, 'Y', color='green')
+
+        ax.set_xlabel('X (Left/Right)')
+        ax.set_ylabel('Z (Front/Back)')
+        ax.set_zlabel('Y (Up/Down)')
+        ax.set_title(f'3D Trajectory ({len(points)} points)\nCamera Distance: {R}, Height: {h}')
+        ax.legend(loc='upper left', fontsize=8)
+
+        # Set equal aspect ratio
+        max_range = max(axis_len, R) * 1.1
+        ax.set_xlim([-max_range, max_range])
+        ax.set_ylim([-max_range, max_range])
+        ax.set_zlim([-max_range/2, max_range])
+
+        # Set viewing angle
+        ax.view_init(elev=25, azim=45)
+
+        plt.tight_layout()
+
+        # Save to buffer and return as numpy array
+        buf = BytesIO()
+        plt.savefig(buf, format='png', dpi=100, bbox_inches='tight')
+        buf.seek(0)
+        plt.close(fig)
+
+        # Convert to numpy array for Gradio
+        from PIL import Image
+        img = Image.open(buf)
+        logger.info(f"Successfully created 3D trajectory visualization")
+        return np.array(img)
+
+    except Exception as e:
+        logger.error(f"Error visualizing trajectory: {e}")
+        import traceback
+        traceback.print_exc()
+        # Return an error image instead of None
+        fig, ax = plt.subplots(figsize=(10, 8))
+        ax.text(0.5, 0.5, f'Error visualizing trajectory:\n\n{str(e)}',
+               ha='center', va='center', fontsize=12, transform=ax.transAxes, color='red')
+        ax.set_xlim(0, 1)
+        ax.set_ylim(0, 1)
+        ax.axis('off')
+        buf = BytesIO()
+        plt.savefig(buf, format='png', dpi=100, bbox_inches='tight')
+        buf.seek(0)
+        plt.close(fig)
+        from PIL import Image
+        return np.array(Image.open(buf))
+
+def create_trajectory_draw_canvas(points, cam_dist, grid_size=5.0):
+    """Create a top-down view canvas for drawing trajectory (fallback when no video)"""
+    import matplotlib
+    matplotlib.use('Agg')
+    import matplotlib.pyplot as plt
+    from io import BytesIO
+
+    fig, ax = plt.subplots(figsize=(6, 6))
+
+    # Draw grid
+    grid_range = max(grid_size, cam_dist) * 1.2
+    ax.set_xlim(-grid_range, grid_range)
+    ax.set_ylim(-grid_range, grid_range)
+    ax.set_aspect('equal')
+    ax.grid(True, alpha=0.3)
+
+    # Draw axes
+    ax.axhline(y=0, color='k', linewidth=0.5)
+    ax.axvline(x=0, color='k', linewidth=0.5)
+
+    # Draw camera positions
+    R = cam_dist
+    cameras = [(0, -R, '0°'), (R, 0, '90°'), (0, R, '180°'), (-R, 0, '270°')]
+    for cx, cz, label in cameras:
+        ax.scatter([cx], [cz], s=100, marker='^', c='gray', alpha=0.5)
+        ax.annotate(label, (cx, cz), textcoords="offset points", xytext=(5, 5), fontsize=8)
+
+    # Draw trajectory points
+    if points and len(points) > 0:
+        xs = [p[0] for p in points]
+        zs = [p[2] for p in points]
+        ys = [p[1] for p in points]  # Y heights for color
+
+        # Draw lines connecting points
+        if len(points) > 1:
+            ax.plot(xs, zs, 'b-', linewidth=2, alpha=0.7)
+
+        # Draw points with color based on Y height
+        scatter = ax.scatter(xs, zs, c=ys, cmap='coolwarm', s=100, edgecolors='black', linewidths=1, vmin=-5, vmax=5)
+        plt.colorbar(scatter, ax=ax, label='Y Height', shrink=0.8)
+
+        # Number the points
+        for i, (x, z) in enumerate(zip(xs, zs)):
+            ax.annotate(str(i+1), (x, z), textcoords="offset points", xytext=(5, 5), fontsize=10, fontweight='bold')
+
+        # Mark start and end
+        ax.scatter([xs[0]], [zs[0]], s=200, marker='o', facecolors='none', edgecolors='green', linewidths=3, label='Start')
+        if len(xs) > 1:
+            ax.scatter([xs[-1]], [zs[-1]], s=200, marker='s', facecolors='none', edgecolors='red', linewidths=3, label='End')
+
+    ax.set_xlabel('X (Left ← → Right)')
+    ax.set_ylabel('Z (Front ← → Back)')
+    ax.set_title(f'Top-Down View (click to add points)\n{len(points) if points else 0} points')
+    if points and len(points) > 0:
+        ax.legend(loc='upper right', fontsize=8)
+
+    plt.tight_layout()
+
+    buf = BytesIO()
+    plt.savefig(buf, format='png', dpi=100)
+    buf.seek(0)
+    plt.close(fig)
+
+    from PIL import Image
+    return np.array(Image.open(buf))
+
+def draw_trajectory_on_frame(frame, points, cam_dist, cam_height, cam_fov):
+    """Draw 3D trajectory points projected onto video frame (0° view)"""
+    if frame is None:
+        return None
+
+    import math
+
+    display = frame.copy()
+    h, w = display.shape[:2]
+
+    # Camera intrinsics for 0° view
+    fov_rad = math.radians(cam_fov)
+    focal_length = h / (2 * math.tan(fov_rad / 2))
+    cx, cy = w / 2, h / 2
+
+    # Camera position for 0° (front) - looking at origin from -Z
+    cam_pos = np.array([0, cam_height, -cam_dist])
+
+    def project_point(point_3d):
+        """Project 3D point to 2D for 0° camera"""
+        x, y, z = point_3d
+
+        # Transform to camera space (camera at 0° looks along +Z)
+        # Camera coordinate: right=+X, down=+Y, forward=+Z
+        x_cam = x - cam_pos[0]
+        y_cam = -(y - cam_pos[1])  # Flip Y (image Y is down)
+        z_cam = z - cam_pos[2]  # Distance along viewing direction
+
+        if z_cam <= 0.1:  # Behind camera
+            return None
+
+        # Perspective projection
+        u = int(focal_length * x_cam / z_cam + cx)
+        v = int(focal_length * y_cam / z_cam + cy)
+
+        return (u, v)
+
+    projected_points = []
+    for pt in points:
+        proj = project_point(pt)
+        if proj:
+            projected_points.append((proj, pt))
+
+    # Draw trajectory line
+    if len(projected_points) > 1:
+        for i in range(len(projected_points) - 1):
+            pt1 = projected_points[i][0]
+            pt2 = projected_points[i + 1][0]
+            cv2.line(display, pt1, pt2, (255, 255, 0), 2, cv2.LINE_AA)
+
+    # Draw points with color based on Y height and numbers
+    for i, (proj, orig) in enumerate(projected_points):
+        x, y, z = orig
+        # Color based on Y height: blue (low) -> green (0) -> red (high)
+        if y < 0:
+            color = (255, int(255 * (1 + y/3)), 0)  # Blue to green
+        else:
+            color = (int(255 * (1 - y/3)), 255, 0)  # Green to red
+        color = (0, 255, 0)  # Simplified: green for all
+
+        # Draw point
+        cv2.circle(display, proj, 10, color, -1)
+        cv2.circle(display, proj, 10, (0, 0, 0), 2)
+
+        # Draw point number
+        cv2.putText(display, str(i + 1), (proj[0] + 12, proj[1] + 5),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
+        cv2.putText(display, str(i + 1), (proj[0] + 12, proj[1] + 5),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 0), 1)
+
+        # Draw Y height indicator
+        y_text = f"Y:{y:.1f}"
+        cv2.putText(display, y_text, (proj[0] - 20, proj[1] - 15),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 255, 0), 1)
+
+    # Mark start (green circle) and end (red square)
+    if len(projected_points) > 0:
+        start_pt = projected_points[0][0]
+        cv2.circle(display, start_pt, 15, (0, 255, 0), 3)
+
+    if len(projected_points) > 1:
+        end_pt = projected_points[-1][0]
+        cv2.rectangle(display, (end_pt[0]-12, end_pt[1]-12), (end_pt[0]+12, end_pt[1]+12), (0, 0, 255), 3)
+
+    # Draw info overlay
+    info_text = f"Points: {len(points)} | Cam Dist: {cam_dist} | FOV: {cam_fov}"
+    cv2.putText(display, info_text, (10, 25), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
+    cv2.putText(display, info_text, (10, 25), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 0), 1)
+
+    return display
 
 def passthrough(video_path):
     return video_path
@@ -127,7 +428,7 @@ def cleanup_temp_files(paths):
         except Exception as e:
             logger.warning(f"清理临时文件失败 {path}: {e}")
 
-def extract_frames(video_path, output_dir, start_frame=0, end_frame=100):
+def extract_frames(video_path, output_dir, start_frame=0, end_frame=48):
     """从视频中提取帧"""
     ensure_directory_exists(output_dir)
     cap = cv2.VideoCapture(video_path)
@@ -147,7 +448,7 @@ def extract_frames(video_path, output_dir, start_frame=0, end_frame=100):
     cap.release()
     return frame_count
 
-def create_video_from_frames(frames_dir, output_path, fps=24):
+def create_video_from_frames(frames_dir, output_path, fps=12):
     """从帧创建视频"""
     frame_names = sorted([f for f in os.listdir(frames_dir) if f.endswith(('.jpg', '.png'))])
     if not frame_names:
@@ -167,8 +468,11 @@ def create_video_from_frames(frames_dir, output_path, fps=24):
     return True
 
 # -------- Video Processing Functions --------
-def adjust_video_resolution(video_path, target_width=720, target_height=480, target_frames=100, target_fps=24):
-    """调整视频分辨率、帧数和帧率，直接取前100帧"""
+def adjust_video_resolution(video_path, target_width=720, target_height=480, target_frames=49, target_fps=12):
+    """调整视频分辨率、帧数和帧率：
+       - 对短视频逐帧读取
+       - 对长视频根据总帧数自动跳帧，最多写 target_frames 帧
+    """
     if not video_path or not os.path.exists(video_path):
         return None, "Please provide a valid video file"
 
@@ -181,32 +485,81 @@ def adjust_video_resolution(video_path, target_width=720, target_height=480, tar
         if not cap.isOpened():
             return None, "Unable to open video file"
 
+        # 先看原视频总帧数
+        total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        print(f"[adjust_video_resolution] total_frames = {total_frames}")
+
+        # -------- 计算跳帧间隔 skip_interval --------
+        skip_interval = 0
+        if total_frames >= 200 and total_frames < 300:
+            skip_interval = 1
+        elif total_frames >= 300 and total_frames < 400:
+            skip_interval = 2
+        elif total_frames >= 400:
+            # 对于400帧以上的视频，每增加100帧，跳帧间隔增加1
+            # skip_interval = (total_frames // 100) - 2
+            skip_interval = 3
+
+        stride = skip_interval + 1
+        if skip_interval > 0:
+            print(f"[adjust_video_resolution] 启用跳帧功能，跳帧间隔: {skip_interval} (stride={stride})")
+        else:
+            print("[adjust_video_resolution] 不启用跳帧功能，逐帧读取 (stride=1)")
+        # -------------------------------------------
+
         fourcc = cv2.VideoWriter_fourcc(*'mp4v')
         out = cv2.VideoWriter(temp_output_path, fourcc, target_fps, (target_width, target_height))
 
-        frame_count = 0
-        last_frame = None
+        sampled_frames = []  # 保存已经写出的帧（resize 后）
 
-        while frame_count < target_frames:
+        written_frames = 0
+        src_idx = 0  # 原视频帧索引
+
+        # 先按 stride 从头采样，直到写满 target_frames 或读完视频
+        while True:
             ret, frame = cap.read()
-
             if not ret:
-                if last_frame is not None:
-                    frame = last_frame.copy()
-                else:
+                break
+
+            if src_idx % stride == 0:
+                resized_frame = cv2.resize(frame, (target_width, target_height))
+                out.write(resized_frame)
+                sampled_frames.append(resized_frame)
+                written_frames += 1
+
+                if written_frames >= target_frames:
                     break
 
-            resized_frame = cv2.resize(frame, (target_width, target_height))
-            out.write(resized_frame)
-            frame_count += 1
-            last_frame = frame
+            src_idx += 1
 
         cap.release()
-        out.release()
 
+        if len(sampled_frames) == 0:
+            out.release()
+            return None, "No frames written during adjustment"
+
+        # 若采样帧数不足 target_frames，则用 ping-pong 方式补帧
+        if written_frames < target_frames:
+            n = len(sampled_frames)
+            backward_indices = list(range(n - 1, -1, -1))  # 从后往前
+            forward_indices = list(range(n))               # 从前往后
+            patterns = [backward_indices, forward_indices]
+            pattern_idx = 0  # 0 -> backward, 1 -> forward
+
+            while written_frames < target_frames:
+                seq = patterns[pattern_idx]
+                for idx in seq:
+                    if written_frames >= target_frames:
+                        break
+                    out.write(sampled_frames[idx])
+                    written_frames += 1
+                pattern_idx = 1 - pattern_idx  # 方向切换
+
+        out.release()
         return temp_output_path, "Adjustment successful"
     except Exception as e:
         return None, f"Adjustment Failed: {str(e)}"
+
 
 def process_foreground_video(fg_video, fg_points, run_folder=None):
     """使用SAM2处理前景视频，基于用户点击的点"""
@@ -227,8 +580,8 @@ def process_foreground_video(fg_video, fg_points, run_folder=None):
         fg_video,
         target_width=720,
         target_height=480,
-        target_frames=100,
-        target_fps=24
+        target_frames=49,
+        target_fps=12
     )
 
     if not adjusted_fg_video:
@@ -246,7 +599,7 @@ def process_foreground_video(fg_video, fg_points, run_folder=None):
     
     try:
         # 提取视频帧
-        frame_count = extract_frames(adjusted_fg_video, frames_dir, 0, 100)
+        frame_count = extract_frames(adjusted_fg_video, frames_dir, 0, 48)
         if frame_count == 0:
             return None, None, None, run_folder, "Unable to extract video frame"
             
@@ -257,12 +610,29 @@ def process_foreground_video(fg_video, fg_points, run_folder=None):
         first_frame_path = os.path.join(frames_dir, "00000.jpg")
         image = Image.open(first_frame_path).convert("RGB")
         image_predictor.set_image(np.array(image))
-        
-        # 转换点击的点为numpy数组
-        point_coords = np.array(fg_points, dtype=np.float32)
-        point_labels = np.ones(len(fg_points), dtype=np.int32)  # 正点
-        
-        # 获取第一帧的掩膜
+
+        # Convert clicked points to numpy arrays
+        # fg_points is now a list of (x, y, label) tuples
+        # Handle both old format (x, y) and new format (x, y, label)
+        point_coords = []
+        point_labels = []
+        for point in fg_points:
+            if len(point) == 3:
+                x, y, label = point
+                point_coords.append([x, y])
+                point_labels.append(label)
+            else:
+                # Backward compatibility: old format (x, y) defaults to positive
+                x, y = point
+                point_coords.append([x, y])
+                point_labels.append(1)
+
+        point_coords = np.array(point_coords, dtype=np.float32)
+        point_labels = np.array(point_labels, dtype=np.int32)
+
+        logger.info(f"Point coords: {point_coords}, Labels: {point_labels}")
+
+        # Get mask for first frame
         masks, scores, logits = image_predictor.predict(
             point_coords=point_coords,
             point_labels=point_labels,
@@ -323,12 +693,12 @@ def process_foreground_video(fg_video, fg_points, run_folder=None):
         
         # 创建前景元素视频
         element_video_path = os.path.join(temp_dir, "element_video.mp4")
-        if not create_video_from_frames(element_dir, element_video_path, fps=24):
+        if not create_video_from_frames(element_dir, element_video_path, fps=12):
             return None, None, None, run_folder, "Failed to create foreground element video"
             
         # 创建掩码视频
         mask_video_path = os.path.join(temp_dir, "mask_video.mp4")
-        if not create_video_from_frames(mask_dir, mask_video_path, fps=24):
+        if not create_video_from_frames(mask_dir, mask_video_path, fps=12):
             return None, None, None, run_folder, "Failed to create mask video"
         
         # Save segmented object video to run folder
@@ -363,8 +733,8 @@ def auto_adjust_background_video(video_path):
         video_path,
         target_width=720,
         target_height=480,
-        target_frames=100,
-        target_fps=24
+        target_frames=49,
+        target_fps=12
     )
 
     return adjusted_video, status
@@ -378,8 +748,8 @@ def auto_adjust_foreground_video(video_path):
         video_path,
         target_width=720,
         target_height=480,
-        target_frames=100,
-        target_fps=24
+        target_frames=49,
+        target_fps=12
     )
 
     return adjusted_video, status
@@ -470,14 +840,64 @@ def draw_and_save_trajectory(source_video_path, trajectory_points_json, trajecto
         os.unlink(adjusted_video)
     return vis_path, trajectory_txt_path, f"轨迹已保存至 {trajectory_txt_path}"
 
-def load_trajectory(trajectory_path):
-    """加载轨迹坐标文件"""
-    trajectory = []
-    with open(trajectory_path, 'r') as f:
-        for line in f:
-            x, y = map(int, line.strip().split(','))
-            trajectory.append((x, y))
-    return trajectory
+def load_trajectory(trajectory_path, camera_angle=None, camera_distance=10.0, camera_height=0.0, camera_fov=60.0):
+    """
+    Load trajectory coordinates from file.
+    Supports both 2D (legacy) and 3D formats.
+
+    Args:
+        trajectory_path: Path to trajectory file
+        camera_angle: Required for 3D trajectories - angle in degrees (0, 90, 180, 270)
+        camera_distance: Camera distance from origin (for 3D projection)
+        camera_height: Camera Y position (for 3D projection)
+        camera_fov: Field of view in degrees (for 3D projection)
+
+    Returns:
+        List of (x, y) 2D coordinates
+    """
+    # Import 3D trajectory module
+    from infer.trajectory_3d import (
+        is_3d_trajectory, load_trajectory_3d, Camera, CameraConfig
+    )
+
+    if is_3d_trajectory(trajectory_path):
+        # 3D trajectory - requires projection
+        if camera_angle is None:
+            raise ValueError("3D trajectory requires camera_angle parameter for projection")
+
+        trajectory_3d = load_trajectory_3d(trajectory_path)
+
+        # Create camera config for this view
+        config = CameraConfig(
+            angle=camera_angle,
+            distance=camera_distance,
+            height=camera_height,
+            fov=camera_fov,
+            image_width=720,
+            image_height=480
+        )
+
+        camera = Camera(config)
+        trajectory = []
+        default_point = (360, 240)  # Image center as fallback
+
+        for point in trajectory_3d.points:
+            point_2d = camera.project_3d_to_2d(np.array(point))
+            if point_2d is None:
+                # Point behind camera - use last valid or default
+                point_2d = trajectory[-1] if trajectory else default_point
+            trajectory.append(point_2d)
+
+        return trajectory
+    else:
+        # Original 2D format
+        trajectory = []
+        with open(trajectory_path, 'r') as f:
+            for line in f:
+                if line.strip():
+                    x, y = map(int, line.strip().split(','))
+                    trajectory.append((x, y))
+        return trajectory
 
 def generate_mask_video_with_trajectory(fg_element_path, source_video_path, output_path, trajectory_path, scales=[1.0],
                                         target_width=720, target_height=480, alignment="center", run_folder=None):
@@ -738,7 +1158,7 @@ def generate_video(
         overlap_frames: int = 0,
         prev_clip_weight: float = 0.0,
         start_frame: int = 0,
-        end_frame: int = 100,
+        end_frame: int = 49,
         img_inpainting_model: str = None,
         llm_model: str = None,
         long_video: bool = False,
@@ -746,8 +1166,8 @@ def generate_video(
         id_adapter_resample_learnable_path: str = None,
         run_folder: str = None,
 ):
-    fps = 24
-    # 使用固定提示词
+    fps = 12
+    # Using fixed prompt
     prompt = "A realistic scene with objects moving naturally"
     
     try:
@@ -765,24 +1185,67 @@ def generate_video(
         )
 
         if generate_type == "i2v_inpainting":
-            frames = inpainting_frames
-            down_sample_fps = fps // 2
-            video, masked_video, binary_masks, fg_video, fgy_video = (
-                video[::int(fps // down_sample_fps)],
-                masked_video[::int(fps // down_sample_fps)],
-                binary_masks[::int(fps // down_sample_fps)],
-                fg_video[::int(fps // down_sample_fps)],
-                fgy_video[::int(fps // down_sample_fps)],
-            )
-            video, masked_video, binary_masks, fg_video, fgy_video = (
-                video[:frames],
-                masked_video[:frames],
-                binary_masks[:frames],
-                fg_video[:frames],
-                fgy_video[:frames],
-            )
-            if len(video) < frames:
-                raise ValueError(f"video length is less than {frames}, len(video): {len(video)}")
+            frames = inpainting_frames  # 一般是 49
+
+            total_frames = len(video)
+            if total_frames == 0:
+                raise ValueError("No frames loaded from video/mask/foreground")
+
+            # 只考虑全部帧作为候选
+            max_use = total_frames
+
+            # -------- 根据“原视频总帧数”决定跳帧间隔 --------
+            skip_interval = 0
+            if total_frames >= 200 and total_frames < 300:
+                skip_interval = 1
+            elif total_frames >= 300 and total_frames < 400:
+                skip_interval = 2
+            elif total_frames >= 400:
+                # 对于400帧以上的视频，每增加100帧，跳帧间隔增加1
+                skip_interval = (total_frames // 100) - 2
+            stride = skip_interval + 1
+
+            if skip_interval > 0:
+                print(f"[generate_video] Enable frame skipping function, frame skipping interval: {skip_interval} (stride={stride}), total_frames={total_frames}")
+            else:
+                print(f"[generate_video] Disable frame skipping, use frame-by-frame (stride=1), total_frames={total_frames}")
+            # ------------------------------------------------
+            # 先按 stride 从 0 ~ max_use-1 采样一串候选索引
+            indices = list(range(0, max_use, stride))
+
+            # 如果采出来的索引比 49 多，就截到 49；不够 49 就循环补齐（改为 ping-pong）
+            if len(indices) >= frames:
+                indices = indices[:frames]
+            else:
+                if len(indices) == 0:
+                    # 极端情况：max_use=0 已经在前面报错了，理论不会到这里
+                    indices = [0] * frames
+                else:
+                    base = indices.copy()
+                    # base 是一次从前到后的采样结果，例如 [0, stride, 2*stride, ...]
+                    forward_indices = base
+                    backward_indices = list(reversed(base))
+                    patterns = [backward_indices, forward_indices]  # 先后->前，再前->后
+                    pattern_idx = 0  # 0 表示先用 backward，再用 forward
+
+                    while len(indices) < frames:
+                        seq = patterns[pattern_idx]
+                        for idx in seq:
+                            if len(indices) >= frames:
+                                break
+                            indices.append(idx)
+                        # 切换方向：backward <-> forward
+                        pattern_idx = 1 - pattern_idx
+
+
+            # 按选中的索引重排所有序列，保证长度一致且 = frames
+            video = [video[i] for i in indices]
+            masked_video = [masked_video[i] for i in indices]
+            binary_masks = [binary_masks[i] for i in indices]
+            fg_video = [fg_video[i] for i in indices]
+            fgy_video = [fgy_video[i] for i in indices]
+
+
             
             # Save the downsampled mask by reading the clean mask video and downsampling it
             if run_folder and os.path.exists(mask_path):
@@ -849,6 +1312,7 @@ def generate_video(
                 id_pool_resample_learnable=False,
                 output_type="np"
             ).frames[0]
+
             torch.cuda.empty_cache()
             video_generate = inpaint_outputs
             output_dir = './results'
@@ -1090,8 +1554,9 @@ with gr.Blocks(css=css) as demo:
     original_bg_frame = gr.State(None)
     final_mask_output_state = gr.State(None)
     is_drawing = gr.State(False)
-    fg_points = gr.State([])
+    fg_points = gr.State([])  # List of (x, y, label) tuples - label: 1=positive, 0=negative
     is_drawing_fg = gr.State(False)
+    fg_point_mode = gr.State("positive")  # "positive" or "negative"
     original_fg_frame = gr.State(None)
     inference_steps = gr.State(10)  # New state for inference steps
     run_folder = gr.State(None)  # Track the current run folder
@@ -1170,6 +1635,17 @@ with gr.Blocks(css=css) as demo:
                         "Clear selected points",
                         elem_classes=["custom-button", "rounded-button"]
                     )
+                with gr.Row(elem_classes="button-spacing"):
+                    btn_positive_mode = gr.Button(
+                        "✓ Positive (Include)",
+                        variant="primary",
+                        elem_classes=["custom-button", "rounded-button"]
+                    )
+                    btn_negative_mode = gr.Button(
+                        "✗ Negative (Exclude)",
+                        variant="secondary",
+                        elem_classes=["custom-button", "rounded-button"]
+                    )
                 fg_status = gr.Textbox(label="Foreground video processing status", interactive=False)
                 fg_first_frame = gr.Image(
                     label="Please click to select an object",
@@ -1221,15 +1697,33 @@ with gr.Blocks(css=css) as demo:
                 )
 
                 def start_drawing_fg():
-                    return True, "Begin selecting object"
+                    return True, "Begin selecting object. Use Positive (green) to include, Negative (red) to exclude."
 
                 btn_start_drawing_fg.click(
                     fn=start_drawing_fg,
                     inputs=[],
                     outputs=[is_drawing_fg, fg_status]
                 )
-                
-                def add_fg_point(evt: gr.SelectData, original_fg_frame, current_points, is_drawing_fg):
+
+                def set_positive_mode():
+                    return "positive", "Mode: Positive (Include) - Click on parts to INCLUDE in mask"
+
+                def set_negative_mode():
+                    return "negative", "Mode: Negative (Exclude) - Click on parts to EXCLUDE from mask"
+
+                btn_positive_mode.click(
+                    fn=set_positive_mode,
+                    inputs=[],
+                    outputs=[fg_point_mode, fg_status]
+                )
+
+                btn_negative_mode.click(
+                    fn=set_negative_mode,
+                    inputs=[],
+                    outputs=[fg_point_mode, fg_status]
+                )
+
+                def add_fg_point(evt: gr.SelectData, original_fg_frame, current_points, is_drawing_fg, point_mode):
                     if not is_drawing_fg:
                         return gr.update(), current_points, "Please click the 'Begin selecting objects' button first"
                     if original_fg_frame is None:
@@ -1238,17 +1732,26 @@ with gr.Blocks(css=css) as demo:
                     x, y = evt.index
                     x = min(max(0, int(x)), 720)
                     y = min(max(0, int(y)), 480)
-                    new_points = current_points + [(x, y)]
+
+                    # Label: 1 for positive (foreground), 0 for negative (background)
+                    label = 1 if point_mode == "positive" else 0
+                    new_points = current_points + [(x, y, label)]
 
                     display_frame = original_fg_frame.copy()
                     for point in new_points:
-                        cv2.circle(display_frame, point, 8, (0, 255, 0), -1)
+                        px, py, plabel = point
+                        # Green for positive, Red for negative
+                        color = (0, 255, 0) if plabel == 1 else (255, 0, 0)
+                        cv2.circle(display_frame, (px, py), 8, color, -1)
 
-                    return display_frame, new_points, f"Added the point ({x}, {y}), a total of {len(new_points)} points"
+                    pos_count = sum(1 for p in new_points if p[2] == 1)
+                    neg_count = sum(1 for p in new_points if p[2] == 0)
+                    mode_str = "positive" if label == 1 else "negative"
+                    return display_frame, new_points, f"Added {mode_str} point ({x}, {y}). Total: {pos_count} positive, {neg_count} negative"
 
                 fg_first_frame.select(
                     fn=add_fg_point,
-                    inputs=[original_fg_frame, fg_points, is_drawing_fg],
+                    inputs=[original_fg_frame, fg_points, is_drawing_fg, fg_point_mode],
                     outputs=[fg_first_frame, fg_points, fg_status]
                 )
 
@@ -1570,7 +2073,7 @@ with gr.Blocks(css=css) as demo:
                             overlap_frames=0,
                             prev_clip_weight=0.0,
                             start_frame=0,
-                            end_frame=100,
+                            end_frame=49,
                             img_inpainting_model=None,
                             llm_model=None,
                             long_video=False,
@@ -1674,7 +2177,7 @@ with gr.Blocks(css=css) as demo:
                             overlap_frames=0,
                             prev_clip_weight=0.0,
                             start_frame=0,
-                            end_frame=100,
+                            end_frame=49,
                             img_inpainting_model=None,
                             llm_model=None,
                             long_video=False,
@@ -1693,8 +2196,494 @@ with gr.Blocks(css=css) as demo:
                     outputs=[inpainted_video_output, inpaint_status]
                 )
 
+    # =============================================================================
+    # 3D MULTI-VIEW COMPOSITING SECTION
+    # =============================================================================
+
+    with gr.Group(elem_classes="step-group"):
+        gr.Markdown(
+            """
+            ## 3D Multi-View Compositing
+            ### Composite foreground elements across 4 camera views using a single 3D trajectory
+
+            <span class='quick-guide'>How it works:</span>
+            1. Upload **4 background videos** (one for each camera angle: 0°, 90°, 180°, 270°)
+            2. Upload **4 foreground videos** (one for each camera angle)
+            3. Define a **3D trajectory** using world coordinates (x, y, z)
+            4. The system will project the 3D trajectory to 2D for each view and composite all videos
+
+            **To draw 3D trajectory interactively**, run in terminal: `python infer/draw_trajectory_3d.py`
+            """
+        )
+
+        with gr.Row():
+            with gr.Column(scale=1):
+                gr.Markdown("### 3D Trajectory Input")
+                with gr.Tabs():
+                    with gr.TabItem("Text Input"):
+                        trajectory_3d_input = gr.TextArea(
+                            label="3D Keypoints (x, y, z per line)",
+                            placeholder="# World coordinates: origin at scene center, Y=up\n# Example trajectory:\n-2.0, 0.0, 0.0\n0.0, 1.0, 0.0\n2.0, 0.0, 0.0",
+                            lines=6,
+                            info="Enter x,y,z coordinates per line. Will be interpolated to 49 frames."
+                        )
+                        trajectory_3d_file = gr.File(
+                            label="Or upload 3D trajectory file (.txt)",
+                            file_types=[".txt"]
+                        )
+                    with gr.TabItem("Draw Trajectory"):
+                        gr.Markdown("**Draw on Background 0° (Front view). Click to add 3D points.**")
+                        gr.Markdown("Click position = X,Y in image. Use slider for Z (depth).")
+                        traj_draw_z_depth = gr.Slider(label="Z (Depth: -=closer to camera, +=farther)", minimum=-5.0, maximum=5.0, value=0.0, step=0.1)
+                        traj_draw_points = gr.State([])  # List of (x, y, z) tuples
+                        traj_draw_original_frame = gr.State(None)  # Store original bg frame
+                        traj_draw_canvas = gr.Image(label="Click to add trajectory points (X,Y from click, Z from slider)", height=350, interactive=True)
+                        with gr.Row():
+                            btn_traj_draw_start = gr.Button("Load BG & Start", variant="primary", size="sm")
+                            btn_traj_draw_undo = gr.Button("Undo Last", variant="secondary", size="sm")
+                            btn_traj_draw_clear = gr.Button("Clear All", variant="secondary", size="sm")
+                            btn_traj_draw_apply = gr.Button("Apply to Input", variant="primary", size="sm")
+                        traj_draw_status = gr.Textbox(label="Drawing Status", interactive=False, lines=1, show_label=False)
+
+                btn_visualize_traj = gr.Button("Visualize 3D Trajectory", variant="primary", size="sm")
+
+            with gr.Column(scale=1):
+                gr.Markdown("### Camera Parameters")
+                camera_distance = gr.Number(label="Camera Distance (R)", value=5.0, minimum=1.0, maximum=50.0)
+                camera_height = gr.Number(label="Camera Height", value=0.0, minimum=-20.0, maximum=20.0)
+                camera_fov = gr.Number(label="FOV (degrees)", value=60.0, minimum=30.0, maximum=120.0)
+                mv_rescale = gr.Number(label="Rescale Factor", value=0.4, minimum=0.1, maximum=5.0)
+                mv_inference_steps = gr.Number(label="Inference Steps", value=10, minimum=1, maximum=100, step=1)
+
+            with gr.Column(scale=2):
+                gr.Markdown("### 3D Trajectory Preview")
+                trajectory_3d_plot = gr.Image(label="3D View with Camera Positions", height=350, interactive=False)
+
+        gr.Markdown("### Background Videos (4 camera angles)")
+        with gr.Row():
+            mv_bg_0 = gr.Video(label="Background 0° (Front)", height=200)
+            mv_bg_90 = gr.Video(label="Background 90° (Right)", height=200)
+            mv_bg_180 = gr.Video(label="Background 180° (Back)", height=200)
+            mv_bg_270 = gr.Video(label="Background 270° (Left)", height=200)
+
+        gr.Markdown("### Foreground Videos (4 camera angles)")
+        with gr.Row():
+            mv_fg_0 = gr.Video(label="Foreground 0° (Front)", height=200)
+            mv_fg_90 = gr.Video(label="Foreground 90° (Right)", height=200)
+            mv_fg_180 = gr.Video(label="Foreground 180° (Back)", height=200)
+            mv_fg_270 = gr.Video(label="Foreground 270° (Left)", height=200)
+
+        gr.Markdown("### Foreground Object Selection")
+        mv_fg_points_0 = gr.State([])
+        mv_fg_points_90 = gr.State([])
+        mv_fg_points_180 = gr.State([])
+        mv_fg_points_270 = gr.State([])
+        mv_fg_drawing = gr.State({0: False, 90: False, 180: False, 270: False})
+        mv_fg_point_mode = gr.State({0: "positive", 90: "positive", 180: "positive", 270: "positive"})
+        mv_fg_original_frames = gr.State({0: None, 90: None, 180: None, 270: None})
+        mv_fg_segmented = gr.State({0: None, 90: None, 180: None, 270: None})
+
+        with gr.Row():
+            with gr.Column():
+                gr.Markdown("**View 0° (Front)**")
+                mv_fg_frame_0 = gr.Image(label="Click to select object (0°)", height=180, interactive=True)
+                with gr.Row():
+                    btn_mv_fg_start_0 = gr.Button("Start", variant="secondary", size="sm")
+                    btn_mv_fg_clear_0 = gr.Button("Clear", variant="secondary", size="sm")
+                with gr.Row():
+                    btn_mv_pos_0 = gr.Button("+ Include", variant="primary", size="sm")
+                    btn_mv_neg_0 = gr.Button("- Exclude", variant="secondary", size="sm")
+                btn_mv_segment_0 = gr.Button("Segment (0°)", variant="primary", size="sm")
+                mv_fg_status_0 = gr.Textbox(label="Status", interactive=False, lines=1, show_label=False)
+                mv_fg_element_0 = gr.Video(label="Segmented Output (0°)", height=150)
+
+            with gr.Column():
+                gr.Markdown("**View 90° (Right)**")
+                mv_fg_frame_90 = gr.Image(label="Click to select object (90°)", height=180, interactive=True)
+                with gr.Row():
+                    btn_mv_fg_start_90 = gr.Button("Start", variant="secondary", size="sm")
+                    btn_mv_fg_clear_90 = gr.Button("Clear", variant="secondary", size="sm")
+                with gr.Row():
+                    btn_mv_pos_90 = gr.Button("+ Include", variant="primary", size="sm")
+                    btn_mv_neg_90 = gr.Button("- Exclude", variant="secondary", size="sm")
+                btn_mv_segment_90 = gr.Button("Segment (90°)", variant="primary", size="sm")
+                mv_fg_status_90 = gr.Textbox(label="Status", interactive=False, lines=1, show_label=False)
+                mv_fg_element_90 = gr.Video(label="Segmented Output (90°)", height=150)
+
+            with gr.Column():
+                gr.Markdown("**View 180° (Back)**")
+                mv_fg_frame_180 = gr.Image(label="Click to select object (180°)", height=180, interactive=True)
+                with gr.Row():
+                    btn_mv_fg_start_180 = gr.Button("Start", variant="secondary", size="sm")
+                    btn_mv_fg_clear_180 = gr.Button("Clear", variant="secondary", size="sm")
+                with gr.Row():
+                    btn_mv_pos_180 = gr.Button("+ Include", variant="primary", size="sm")
+                    btn_mv_neg_180 = gr.Button("- Exclude", variant="secondary", size="sm")
+                btn_mv_segment_180 = gr.Button("Segment (180°)", variant="primary", size="sm")
+                mv_fg_status_180 = gr.Textbox(label="Status", interactive=False, lines=1, show_label=False)
+                mv_fg_element_180 = gr.Video(label="Segmented Output (180°)", height=150)
+
+            with gr.Column():
+                gr.Markdown("**View 270° (Left)**")
+                mv_fg_frame_270 = gr.Image(label="Click to select object (270°)", height=180, interactive=True)
+                with gr.Row():
+                    btn_mv_fg_start_270 = gr.Button("Start", variant="secondary", size="sm")
+                    btn_mv_fg_clear_270 = gr.Button("Clear", variant="secondary", size="sm")
+                with gr.Row():
+                    btn_mv_pos_270 = gr.Button("+ Include", variant="primary", size="sm")
+                    btn_mv_neg_270 = gr.Button("- Exclude", variant="secondary", size="sm")
+                btn_mv_segment_270 = gr.Button("Segment (270°)", variant="primary", size="sm")
+                mv_fg_status_270 = gr.Textbox(label="Status", interactive=False, lines=1, show_label=False)
+                mv_fg_element_270 = gr.Video(label="Segmented Output (270°)", height=150)
+
+        btn_process_multiview = gr.Button("Process All 4 Views", variant="primary", elem_classes=["custom-button", "rounded-button"])
+        mv_status = gr.Textbox(label="Multi-view Processing Status", interactive=False, lines=4)
+
+        gr.Markdown("### Output Videos")
+        with gr.Row():
+            mv_output_0 = gr.Video(label="Output 0°", height=250, autoplay=True)
+            mv_output_90 = gr.Video(label="Output 90°", height=250, autoplay=True)
+            mv_output_180 = gr.Video(label="Output 180°", height=250, autoplay=True)
+            mv_output_270 = gr.Video(label="Output 270°", height=250, autoplay=True)
+
+        # Trajectory visualization button handler
+        btn_visualize_traj.click(
+            fn=visualize_3d_trajectory,
+            inputs=[trajectory_3d_input, trajectory_3d_file, camera_distance, camera_height],
+            outputs=[trajectory_3d_plot]
+        )
+
+        # Trajectory drawing handlers
+        traj_draw_is_drawing = gr.State(False)
+
+        def traj_draw_start(bg_video, cam_dist, cam_height, cam_fov):
+            """Initialize the drawing canvas with background video frame"""
+            if not bg_video:
+                return None, None, [], False, "Please upload Background 0° video first"
+
+            # Get first frame from background video
+            frame = get_first_frame(bg_video)
+            if frame is None:
+                return None, None, [], False, "Could not read background video"
+
+            frame_rgb = cv2.resize(frame, (720, 480))
+            frame_rgb = frame_rgb[:, :, ::-1]  # BGR to RGB
+
+            # Draw empty trajectory overlay
+            canvas = draw_trajectory_on_frame(frame_rgb, [], cam_dist, cam_height, cam_fov)
+
+            return canvas, frame_rgb, [], True, "Click on the video to add trajectory points. X,Y from click, Z from slider."
+
+        def traj_draw_add_point(evt: gr.SelectData, original_frame, points, z_depth, cam_dist, cam_height, cam_fov, is_drawing):
+            """Add a point when canvas is clicked - X,Y from click, Z from slider"""
+            if not is_drawing or original_frame is None:
+                return original_frame, points, "Click 'Load BG & Start' first"
+
+            import math
+
+            # Get click position in image coordinates
+            px, py = evt.index
+            h, w = 480, 720
+
+            # Clamp to image bounds
+            px = max(0, min(w - 1, px))
+            py = max(0, min(h - 1, py))
+
+            # Convert 2D click to 3D world coordinates
+            # For 0° camera looking at origin from -Z direction:
+            # - Image X maps to world X (from click)
+            # - Image Y maps to world Y (from click, inverted)
+            # - Z depth is set by slider
+
+            fov_rad = math.radians(cam_fov)
+            focal_length = h / (2 * math.tan(fov_rad / 2))
+            cx, cy = w / 2, h / 2
+
+            # Distance from camera to the point (along Z)
+            # The point is at z_depth in world coords, camera is at -cam_dist
+            z_world = z_depth
+            dist_to_point = z_world - (-cam_dist)  # = z_depth + cam_dist
+
+            if dist_to_point <= 0.1:
+                return draw_trajectory_on_frame(original_frame, points, cam_dist, cam_height, cam_fov), points, "Z depth too close to camera"
+
+            # Unproject: from pixel to world - X and Y from click position
+            x_world = (px - cx) * dist_to_point / focal_length
+            y_world = -(py - cy) * dist_to_point / focal_length + cam_height
+
+            new_points = points + [(round(x_world, 2), round(y_world, 2), round(z_world, 2))]
+            canvas = draw_trajectory_on_frame(original_frame, new_points, cam_dist, cam_height, cam_fov)
+
+            return canvas, new_points, f"Point {len(new_points)}: X={x_world:.2f}, Y={y_world:.2f}, Z={z_world:.2f}"
+
+        def traj_draw_undo(original_frame, points, cam_dist, cam_height, cam_fov):
+            """Remove the last point"""
+            if original_frame is None:
+                return None, [], "No canvas loaded"
+            if not points:
+                return draw_trajectory_on_frame(original_frame, [], cam_dist, cam_height, cam_fov), [], "No points to undo"
+            new_points = points[:-1]
+            canvas = draw_trajectory_on_frame(original_frame, new_points, cam_dist, cam_height, cam_fov)
+            return canvas, new_points, f"Removed last point. {len(new_points)} points remaining."
+
+        def traj_draw_clear(original_frame, cam_dist, cam_height, cam_fov):
+            """Clear all points"""
+            if original_frame is None:
+                return None, None, [], False, "No canvas loaded"
+            canvas = draw_trajectory_on_frame(original_frame, [], cam_dist, cam_height, cam_fov)
+            return canvas, original_frame, [], False, "Cleared. Click 'Load BG & Start' to begin again."
+
+        def traj_draw_apply(points):
+            """Convert drawn points to text format for the input field"""
+            if not points:
+                return "", "No points to apply"
+            lines = ["#3D"]
+            for x, y, z in points:
+                lines.append(f"{x}, {y}, {z}")
+            return "\n".join(lines), f"Applied {len(points)} points to text input. Click 'Visualize' to preview in 3D."
+
+        btn_traj_draw_start.click(
+            fn=traj_draw_start,
+            inputs=[mv_bg_0, camera_distance, camera_height, camera_fov],
+            outputs=[traj_draw_canvas, traj_draw_original_frame, traj_draw_points, traj_draw_is_drawing, traj_draw_status]
+        )
+
+        traj_draw_canvas.select(
+            fn=traj_draw_add_point,
+            inputs=[traj_draw_original_frame, traj_draw_points, traj_draw_z_depth, camera_distance, camera_height, camera_fov, traj_draw_is_drawing],
+            outputs=[traj_draw_canvas, traj_draw_points, traj_draw_status]
+        )
+
+        btn_traj_draw_undo.click(
+            fn=traj_draw_undo,
+            inputs=[traj_draw_original_frame, traj_draw_points, camera_distance, camera_height, camera_fov],
+            outputs=[traj_draw_canvas, traj_draw_points, traj_draw_status]
+        )
+
+        btn_traj_draw_clear.click(
+            fn=traj_draw_clear,
+            inputs=[traj_draw_original_frame, camera_distance, camera_height, camera_fov],
+            outputs=[traj_draw_canvas, traj_draw_original_frame, traj_draw_points, traj_draw_is_drawing, traj_draw_status]
+        )
+
+        btn_traj_draw_apply.click(
+            fn=traj_draw_apply,
+            inputs=[traj_draw_points],
+            outputs=[trajectory_3d_input, traj_draw_status]
+        )
+
+        # Helper: get first frame and store original
+        def get_first_frame_for_mv(video_path, original_frames, angle):
+            if not video_path:
+                return None, original_frames, []
+            frame = get_first_frame(video_path)
+            frame_rgb = cv2.resize(frame, (720, 480))[:, :, ::-1] if frame is not None else None
+            new_originals = original_frames.copy() if original_frames else {0: None, 90: None, 180: None, 270: None}
+            new_originals[angle] = frame_rgb
+            return frame_rgb, new_originals, []
+
+        mv_fg_0.change(fn=lambda v, o: get_first_frame_for_mv(v, o, 0), inputs=[mv_fg_0, mv_fg_original_frames], outputs=[mv_fg_frame_0, mv_fg_original_frames, mv_fg_points_0])
+        mv_fg_90.change(fn=lambda v, o: get_first_frame_for_mv(v, o, 90), inputs=[mv_fg_90, mv_fg_original_frames], outputs=[mv_fg_frame_90, mv_fg_original_frames, mv_fg_points_90])
+        mv_fg_180.change(fn=lambda v, o: get_first_frame_for_mv(v, o, 180), inputs=[mv_fg_180, mv_fg_original_frames], outputs=[mv_fg_frame_180, mv_fg_original_frames, mv_fg_points_180])
+        mv_fg_270.change(fn=lambda v, o: get_first_frame_for_mv(v, o, 270), inputs=[mv_fg_270, mv_fg_original_frames], outputs=[mv_fg_frame_270, mv_fg_original_frames, mv_fg_points_270])
+
+        # Start drawing
+        def mv_start_drawing(drawing_state, angle):
+            new_state = drawing_state.copy() if drawing_state else {0: False, 90: False, 180: False, 270: False}
+            new_state[angle] = True
+            return new_state, f"Selection started. Green=Include, Red=Exclude"
+
+        btn_mv_fg_start_0.click(fn=lambda s: mv_start_drawing(s, 0), inputs=[mv_fg_drawing], outputs=[mv_fg_drawing, mv_fg_status_0])
+        btn_mv_fg_start_90.click(fn=lambda s: mv_start_drawing(s, 90), inputs=[mv_fg_drawing], outputs=[mv_fg_drawing, mv_fg_status_90])
+        btn_mv_fg_start_180.click(fn=lambda s: mv_start_drawing(s, 180), inputs=[mv_fg_drawing], outputs=[mv_fg_drawing, mv_fg_status_180])
+        btn_mv_fg_start_270.click(fn=lambda s: mv_start_drawing(s, 270), inputs=[mv_fg_drawing], outputs=[mv_fg_drawing, mv_fg_status_270])
+
+        # Clear points
+        def mv_clear_points(original_frames, drawing_state, angle):
+            frame = original_frames.get(angle) if original_frames else None
+            new_drawing = drawing_state.copy() if drawing_state else {0: False, 90: False, 180: False, 270: False}
+            new_drawing[angle] = False
+            return frame, [], new_drawing, "Points cleared"
+
+        btn_mv_fg_clear_0.click(fn=lambda o, d: mv_clear_points(o, d, 0), inputs=[mv_fg_original_frames, mv_fg_drawing], outputs=[mv_fg_frame_0, mv_fg_points_0, mv_fg_drawing, mv_fg_status_0])
+        btn_mv_fg_clear_90.click(fn=lambda o, d: mv_clear_points(o, d, 90), inputs=[mv_fg_original_frames, mv_fg_drawing], outputs=[mv_fg_frame_90, mv_fg_points_90, mv_fg_drawing, mv_fg_status_90])
+        btn_mv_fg_clear_180.click(fn=lambda o, d: mv_clear_points(o, d, 180), inputs=[mv_fg_original_frames, mv_fg_drawing], outputs=[mv_fg_frame_180, mv_fg_points_180, mv_fg_drawing, mv_fg_status_180])
+        btn_mv_fg_clear_270.click(fn=lambda o, d: mv_clear_points(o, d, 270), inputs=[mv_fg_original_frames, mv_fg_drawing], outputs=[mv_fg_frame_270, mv_fg_points_270, mv_fg_drawing, mv_fg_status_270])
+
+        # Set point mode (positive/negative)
+        def mv_set_mode(mode_state, angle, mode):
+            new_state = mode_state.copy() if mode_state else {0: "positive", 90: "positive", 180: "positive", 270: "positive"}
+            new_state[angle] = mode
+            return new_state, f"Mode: {'Include' if mode == 'positive' else 'Exclude'}"
+
+        btn_mv_pos_0.click(fn=lambda m: mv_set_mode(m, 0, "positive"), inputs=[mv_fg_point_mode], outputs=[mv_fg_point_mode, mv_fg_status_0])
+        btn_mv_neg_0.click(fn=lambda m: mv_set_mode(m, 0, "negative"), inputs=[mv_fg_point_mode], outputs=[mv_fg_point_mode, mv_fg_status_0])
+        btn_mv_pos_90.click(fn=lambda m: mv_set_mode(m, 90, "positive"), inputs=[mv_fg_point_mode], outputs=[mv_fg_point_mode, mv_fg_status_90])
+        btn_mv_neg_90.click(fn=lambda m: mv_set_mode(m, 90, "negative"), inputs=[mv_fg_point_mode], outputs=[mv_fg_point_mode, mv_fg_status_90])
+        btn_mv_pos_180.click(fn=lambda m: mv_set_mode(m, 180, "positive"), inputs=[mv_fg_point_mode], outputs=[mv_fg_point_mode, mv_fg_status_180])
+        btn_mv_neg_180.click(fn=lambda m: mv_set_mode(m, 180, "negative"), inputs=[mv_fg_point_mode], outputs=[mv_fg_point_mode, mv_fg_status_180])
+        btn_mv_pos_270.click(fn=lambda m: mv_set_mode(m, 270, "positive"), inputs=[mv_fg_point_mode], outputs=[mv_fg_point_mode, mv_fg_status_270])
+        btn_mv_neg_270.click(fn=lambda m: mv_set_mode(m, 270, "negative"), inputs=[mv_fg_point_mode], outputs=[mv_fg_point_mode, mv_fg_status_270])
+
+        # Add points with labels
+        def mv_add_fg_point(evt: gr.SelectData, frame, points, drawing_state, mode_state, original_frames, angle):
+            if drawing_state is None or not drawing_state.get(angle, False) or frame is None:
+                return frame, points if points is not None else [], f"Click 'Start' first"
+            x, y = evt.index
+            x = min(max(0, int(x)), 720)
+            y = min(max(0, int(y)), 480)
+
+            mode = mode_state.get(angle, "positive") if mode_state else "positive"
+            label = 1 if mode == "positive" else 0
+            new_points = (points if points is not None else []) + [(x, y, label)]
+
+            # Redraw on original frame
+            orig_frame = original_frames.get(angle) if original_frames else frame
+            display = orig_frame.copy() if orig_frame is not None else frame.copy()
+            for pt in new_points:
+                px, py, plabel = pt
+                color = (0, 255, 0) if plabel == 1 else (255, 0, 0)
+                cv2.circle(display, (px, py), 8, color, -1)
+
+            pos_count = sum(1 for p in new_points if p[2] == 1)
+            neg_count = sum(1 for p in new_points if p[2] == 0)
+            return display, new_points, f"+{pos_count} -{neg_count} points"
+
+        def make_mv_add_fg_point_handler(angle):
+            def handler(evt: gr.SelectData, frame, points, drawing_state, mode_state, original_frames):
+                return mv_add_fg_point(evt, frame, points, drawing_state, mode_state, original_frames, angle)
+            return handler
+
+        mv_fg_frame_0.select(fn=make_mv_add_fg_point_handler(0), inputs=[mv_fg_frame_0, mv_fg_points_0, mv_fg_drawing, mv_fg_point_mode, mv_fg_original_frames], outputs=[mv_fg_frame_0, mv_fg_points_0, mv_fg_status_0])
+        mv_fg_frame_90.select(fn=make_mv_add_fg_point_handler(90), inputs=[mv_fg_frame_90, mv_fg_points_90, mv_fg_drawing, mv_fg_point_mode, mv_fg_original_frames], outputs=[mv_fg_frame_90, mv_fg_points_90, mv_fg_status_90])
+        mv_fg_frame_180.select(fn=make_mv_add_fg_point_handler(180), inputs=[mv_fg_frame_180, mv_fg_points_180, mv_fg_drawing, mv_fg_point_mode, mv_fg_original_frames], outputs=[mv_fg_frame_180, mv_fg_points_180, mv_fg_status_180])
+        mv_fg_frame_270.select(fn=make_mv_add_fg_point_handler(270), inputs=[mv_fg_frame_270, mv_fg_points_270, mv_fg_drawing, mv_fg_point_mode, mv_fg_original_frames], outputs=[mv_fg_frame_270, mv_fg_points_270, mv_fg_status_270])
+
+        # Segment single view
+        def mv_segment_single(fg_video, fg_points, segmented_state, angle):
+            if not fg_video or not fg_points:
+                return None, segmented_state, "Need video and points"
+            try:
+                source, mask, element, _, status = process_foreground_video(fg_video, fg_points)
+                new_segmented = segmented_state.copy() if segmented_state else {0: None, 90: None, 180: None, 270: None}
+                new_segmented[angle] = element
+                return element, new_segmented, f"Segmented OK"
+            except Exception as e:
+                return None, segmented_state, f"Error: {str(e)}"
+
+        btn_mv_segment_0.click(fn=lambda v, p, s: mv_segment_single(v, p, s, 0), inputs=[mv_fg_0, mv_fg_points_0, mv_fg_segmented], outputs=[mv_fg_element_0, mv_fg_segmented, mv_fg_status_0])
+        btn_mv_segment_90.click(fn=lambda v, p, s: mv_segment_single(v, p, s, 90), inputs=[mv_fg_90, mv_fg_points_90, mv_fg_segmented], outputs=[mv_fg_element_90, mv_fg_segmented, mv_fg_status_90])
+        btn_mv_segment_180.click(fn=lambda v, p, s: mv_segment_single(v, p, s, 180), inputs=[mv_fg_180, mv_fg_points_180, mv_fg_segmented], outputs=[mv_fg_element_180, mv_fg_segmented, mv_fg_status_180])
+        btn_mv_segment_270.click(fn=lambda v, p, s: mv_segment_single(v, p, s, 270), inputs=[mv_fg_270, mv_fg_points_270, mv_fg_segmented], outputs=[mv_fg_element_270, mv_fg_segmented, mv_fg_status_270])
+
+        def process_multiview_batch(traj_text, traj_file, bg_0, bg_90, bg_180, bg_270, fg_0, fg_90, fg_180, fg_270,
+                                    pts_0, pts_90, pts_180, pts_270, seg_0, seg_90, seg_180, seg_270,
+                                    cam_dist, cam_h, cam_fov, rescale, steps):
+            from infer.trajectory_3d import (parse_trajectory_3d_text, load_trajectory_3d, interpolate_3d_trajectory,
+                                             project_trajectory_to_views, get_camera_configs, save_trajectory_2d, Trajectory3D)
+            results = {0: None, 90: None, 180: None, 270: None}
+            status_lines = []
+
+            try:
+                if traj_file is not None:
+                    trajectory_3d = load_trajectory_3d(traj_file.name)
+                    status_lines.append(f"Loaded 3D trajectory: {len(trajectory_3d.points)} points")
+                elif traj_text and traj_text.strip():
+                    trajectory_3d = parse_trajectory_3d_text(traj_text)
+                    status_lines.append(f"Parsed 3D trajectory: {len(trajectory_3d.points)} points")
+                else:
+                    return None, None, None, None, "Error: Please provide 3D trajectory"
+            except Exception as e:
+                return None, None, None, None, f"Error parsing trajectory: {str(e)}"
+
+            if len(trajectory_3d.points) == 0:
+                return None, None, None, None, "Error: No valid points found"
+
+            if len(trajectory_3d.points) < 49:
+                trajectory_3d = Trajectory3D(points=interpolate_3d_trajectory(trajectory_3d.points, 49), num_frames=49)
+                status_lines.append("Interpolated to 49 frames")
+
+            camera_configs = get_camera_configs(distance=cam_dist, height=cam_h, fov=cam_fov)
+            projected = project_trajectory_to_views(trajectory_3d, camera_configs)
+            status_lines.append("Projected to all 4 views")
+
+            # Use pre-segmented videos if available
+            segmented_vids = {0: seg_0, 90: seg_90, 180: seg_180, 270: seg_270}
+
+            for angle, bg_vid, fg_vid, fg_pts in [(0, bg_0, fg_0, pts_0), (90, bg_90, fg_90, pts_90),
+                                                   (180, bg_180, fg_180, pts_180), (270, bg_270, fg_270, pts_270)]:
+                if not bg_vid:
+                    status_lines.append(f"Skipping {angle}° - missing background video")
+                    continue
+
+                # Check if we have pre-segmented video for this angle
+                pre_segmented = segmented_vids.get(angle)
+
+                if not pre_segmented and not fg_vid:
+                    status_lines.append(f"Skipping {angle}° - missing foreground video")
+                    continue
+
+                try:
+                    status_lines.append(f"Processing {angle}°...")
+                    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                    view_folder = os.path.join("./results/runs", f"{timestamp}_view{angle}")
+                    ensure_directory_exists(view_folder)
+
+                    # Use pre-segmented video if available, otherwise segment now
+                    if pre_segmented:
+                        element = pre_segmented
+                        status_lines.append(f"  {angle}°: Using pre-segmented video")
+                    else:
+                        fg_pts_use = fg_pts if fg_pts and len(fg_pts) > 0 else [(360, 240, 1)]
+                        source, mask, element, _, _ = process_foreground_video(fg_vid, fg_pts_use, view_folder)
+                        if not element:
+                            status_lines.append(f"  {angle}°: FG processing failed")
+                            continue
+
+                    adjusted_bg, _ = auto_adjust_background_video(bg_vid)
+                    traj_path = os.path.join(view_folder, "trajectory_2d.txt")
+                    save_trajectory_2d(projected[angle], traj_path)
+
+                    mask_path = os.path.join(view_folder, "mask_video.mp4")
+                    mask_video, _ = generate_mask_video_with_trajectory(element, adjusted_bg, mask_path, traj_path,
+                                                                        scales=[rescale], alignment="center", run_folder=view_folder)
+                    if not mask_video:
+                        status_lines.append(f"  {angle}°: Mask failed")
+                        continue
+
+                    out_path = os.path.join(view_folder, "output.mp4")
+                    output, _ = generate_video(output_path=out_path, video_path=adjusted_bg, mask_path=mask_video,
+                                               fg_video_path=element, num_inference_steps=int(steps), guidance_scale=6.0,
+                                               num_videos_per_prompt=1, generate_type="i2v_inpainting", seed=42,
+                                               inpainting_frames=49, mask_background=False, add_first=False,
+                                               first_frame_gt=False, replace_gt=False, mask_add=True, down_sample_fps=8,
+                                               overlap_frames=0, prev_clip_weight=0.0, start_frame=0, end_frame=49,
+                                               img_inpainting_model=None, llm_model=None, long_video=False,
+                                               dilate_size=-1, id_adapter_resample_learnable_path=None, run_folder=view_folder)
+                    if output:
+                        results[angle] = output
+                        status_lines.append(f"  {angle}°: Done!")
+                    torch.cuda.empty_cache()
+                except Exception as e:
+                    status_lines.append(f"  {angle}°: Error - {str(e)}")
+                    torch.cuda.empty_cache()
+
+            status_lines.append("\nComplete!")
+            return results[0], results[90], results[180], results[270], "\n".join(status_lines)
+
+        btn_process_multiview.click(
+            fn=process_multiview_batch,
+            inputs=[trajectory_3d_input, trajectory_3d_file, mv_bg_0, mv_bg_90, mv_bg_180, mv_bg_270,
+                    mv_fg_0, mv_fg_90, mv_fg_180, mv_fg_270, mv_fg_points_0, mv_fg_points_90,
+                    mv_fg_points_180, mv_fg_points_270, mv_fg_element_0, mv_fg_element_90,
+                    mv_fg_element_180, mv_fg_element_270, camera_distance, camera_height, camera_fov,
+                    mv_rescale, mv_inference_steps],
+            outputs=[mv_output_0, mv_output_90, mv_output_180, mv_output_270, mv_status]
+        )
+
 demo.launch(
     server_name="0.0.0.0",
     server_port=7860,
-    allowed_paths=["../assets"]
+    allowed_paths=["../assets"],
+    share=True
 )
