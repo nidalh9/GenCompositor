@@ -33,15 +33,21 @@ def load_depth_video(path: str) -> np.ndarray:
     Returns:
         np.ndarray: Shape (T, H, W), depth values in meters
     """
+    print(f"[DEBUG] load_depth_video called with path: {path}")
     path = Path(path)
+    print(f"[DEBUG] Path exists: {path.exists()}, suffix: {path.suffix}, is_dir: {path.is_dir()}")
 
     if path.suffix == '.npy':
+        print(f"[DEBUG] Loading .npy file...")
         depth_video = np.load(str(path))
+        print(f"[DEBUG] Loaded .npy with shape: {depth_video.shape}, dtype: {depth_video.dtype}")
         return depth_video.astype(np.float32)
 
     elif path.is_dir():
         # Load directory of depth frames
+        print(f"[DEBUG] Loading directory of PNG depth frames...")
         frame_paths = sorted(path.glob('*.png')) + sorted(path.glob('*.PNG'))
+        print(f"[DEBUG] Found {len(frame_paths)} PNG files")
         if not frame_paths:
             raise ValueError(f"No PNG files found in {path}")
 
@@ -56,9 +62,12 @@ def load_depth_video(path: str) -> np.ndarray:
             depth = depth.astype(np.float32) / 1000.0
             frames.append(depth)
 
-        return np.stack(frames, axis=0)
+        result = np.stack(frames, axis=0)
+        print(f"[DEBUG] Loaded depth video from PNGs: shape {result.shape}")
+        return result
 
     else:
+        print(f"[DEBUG] ERROR: Unsupported depth format: {path}")
         raise ValueError(f"Unsupported depth format: {path}")
 
 
@@ -117,6 +126,7 @@ def run_depth_anything(image: np.ndarray) -> np.ndarray:
         pil_image = Image.fromarray(image)
 
     # Run inference
+    print(f"Running Depth Anything inference on image of size {pil_image.size}")
     result = model(pil_image)
     depth = np.array(result["depth"])
 
