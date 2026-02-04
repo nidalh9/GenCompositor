@@ -2846,6 +2846,17 @@ with gr.Blocks(css=css) as demo:
                     print(f"[DEBUG] 3D trajectory sample (first 3 points): {points_3d[:3]}")
                     print(f"[DEBUG] 3D trajectory sample (last point): {points_3d[-1]}")
 
+                    # Check distances from each camera to verify scene setup
+                    import numpy as np
+                    first_3d = np.array(points_3d[0])
+                    print(f"\n[DEBUG] ===== DISTANCE CHECK =====")
+                    print(f"[DEBUG] First 3D point: {points_3d[0]}")
+                    for i, cam in enumerate(cameras):
+                        cam_pos = cam.position
+                        dist = np.linalg.norm(first_3d - cam_pos)
+                        print(f"[DEBUG]   Camera {cam.config.angle}° at ({cam_pos[0]:.3f}, {cam_pos[1]:.3f}, {cam_pos[2]:.3f}): distance = {dist:.3f}m")
+                    print(f"[DEBUG] ===========================\n")
+
                     # Create 3D trajectory and project to all views
                     trajectory_3d = Trajectory3D(points=points_3d, num_frames=len(points_3d))
                     projected = project_trajectory_to_views(trajectory_3d, camera_configs)
