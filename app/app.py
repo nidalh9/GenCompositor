@@ -2697,56 +2697,42 @@ with gr.Blocks(css=css) as demo:
                     # Lift 2D trajectory to 3D using depth
                     print(f"[DEBUG] Starting 2D->3D lifting for {len(traj_2d_interpolated)} trajectory points")
                     print(f"[DEBUG] Depth video shape: {depth_video_0.shape}")
-                    points_3d = []
-                    for frame_idx, (px, py) in enumerate(traj_2d_interpolated):
-                        # Get background depth at this frame
-                        if frame_idx < len(depth_video_0):
-                            bg_depth_frame = depth_video_0[frame_idx]
+
+                    # First pass: collect depth values from first few frames to estimate object depth
+                    sample_depths = []
+                    num_samples = min(5, len(traj_2d_interpolated))
+                    print(f"[DEBUG] Estimating object depth from first {num_samples} frames...")
+
+                    for sample_idx in range(num_samples):
+                        px, py = traj_2d_interpolated[sample_idx]
+                        if sample_idx < len(depth_video_0):
+                            bg_depth_frame = depth_video_0[sample_idx]
                         else:
-                            bg_depth_frame = depth_video_0[-1]  # Use last frame if trajectory is longer
+                            bg_depth_frame = depth_video_0[-1]
 
                         depth_val = None
 
-                        # Use Depth Anything pipeline if we have element frames
+                        # Try Depth Anything if available
                         if use_depth_anything and bg_frames and element_frames:
-                            if frame_idx == 0:
-                                print(f"[DEBUG] Frame 0: Using Depth Anything pipeline")
-                                print(f"[DEBUG] Frame 0: bg_frame shape={bg_frames[0].shape}, element_frame shape={element_frames[0].shape}")
                             try:
-                                # Get current background and element frames
-                                bg_frame_idx = min(frame_idx, len(bg_frames) - 1)
-                                elem_frame_idx = min(frame_idx, len(element_frames) - 1)
-
+                                bg_frame_idx = min(sample_idx, len(bg_frames) - 1)
+                                elem_frame_idx = min(sample_idx, len(element_frames) - 1)
                                 bg_frame = bg_frames[bg_frame_idx]
                                 element_frame = element_frames[elem_frame_idx]
 
-                                # Resize element to match rescale factor if needed
                                 if rescale != 1.0:
                                     new_h = int(element_frame.shape[0] * rescale)
                                     new_w = int(element_frame.shape[1] * rescale)
                                     element_frame = cv2.resize(element_frame, (new_w, new_h))
-                                    if frame_idx == 0:
-                                        print(f"[DEBUG] Frame 0: Rescaled element to {new_w}x{new_h}")
 
-                                # Composite element onto background at trajectory point
                                 composite, object_mask = composite_element_at_point(
                                     bg_frame, element_frame, position=(px, py), scale=1.0
                                 )
-                                if frame_idx == 0:
-                                    print(f"[DEBUG] Frame 0: Composite shape={composite.shape}, mask sum={object_mask.sum()}")
 
-                                # Only run Depth Anything if we have a valid object mask
                                 if object_mask.sum() > 100:
-                                    if frame_idx == 0:
-                                        print(f"[DEBUG] Frame 0: Running Depth Anything...")
-                                    # Run Depth Anything on composite
-                                    # Convert BGR to RGB for Depth Anything
                                     composite_rgb = cv2.cvtColor(composite, cv2.COLOR_BGR2RGB)
                                     estimated_depth = run_depth_anything(composite_rgb)
-                                    if frame_idx == 0:
-                                        print(f"[DEBUG] Frame 0: Depth Anything output shape={estimated_depth.shape}, range=[{estimated_depth.min():.3f}, {estimated_depth.max():.3f}]")
 
-                                    # Resize bg_depth_frame to match estimated_depth if needed
                                     if bg_depth_frame.shape != estimated_depth.shape:
                                         bg_depth_resized = cv2.resize(
                                             bg_depth_frame,
@@ -2756,7 +2742,6 @@ with gr.Blocks(css=css) as demo:
                                     else:
                                         bg_depth_resized = bg_depth_frame
 
-                                    # Resize object_mask to match
                                     if object_mask.shape != estimated_depth.shape:
                                         object_mask_resized = cv2.resize(
                                             object_mask.astype(np.float32),
@@ -2766,47 +2751,22 @@ with gr.Blocks(css=css) as demo:
                                     else:
                                         object_mask_resized = object_mask
 
-                                    # Align estimated depth to metric depth
-                                    if frame_idx == 0:
-                                        print(f"[DEBUG] Frame 0: Aligning depth to metric...")
                                     aligned_depth = align_depth_to_metric(
                                         estimated_depth, bg_depth_resized, object_mask_resized
                                     )
-                                    if frame_idx == 0:
-                                        print(f"[DEBUG] Frame 0: Aligned depth range=[{aligned_depth.min():.3f}, {aligned_depth.max():.3f}]")
 
-                                    # Scale trajectory point to aligned depth resolution
                                     scale_x = aligned_depth.shape[1] / 720
                                     scale_y = aligned_depth.shape[0] / 480
                                     traj_pt_scaled = (int(px * scale_x), int(py * scale_y))
 
-                                    # Extract object depth at trajectory point
                                     depth_val = extract_object_depth_at_trajectory(
                                         aligned_depth, object_mask_resized, traj_pt_scaled
                                     )
-                                    if frame_idx == 0:
-                                        print(f"[DEBUG] Frame 0: Extracted depth at ({px}, {py}) = {depth_val:.3f}m")
-
-                                    if frame_idx == 0:
-                                        status_lines.append(f"Depth Anything estimated object depth: {depth_val:.2f}m")
-                                else:
-                                    if frame_idx == 0:
-                                        print(f"[DEBUG] Frame 0: Object mask too small ({object_mask.sum()}), skipping Depth Anything")
-                            except Exception as da_error:
-                                if frame_idx == 0:
-                                    print(f"[DEBUG] Frame 0: Depth Anything ERROR: {da_error}")
-                                    import traceback
-                                    traceback.print_exc()
-                                    status_lines.append(f"Depth Anything fallback: {str(da_error)[:50]}")
+                            except Exception as e:
                                 depth_val = None
-                        else:
-                            if frame_idx == 0:
-                                print(f"[DEBUG] Frame 0: Skipping Depth Anything (use_depth_anything={use_depth_anything}, bg_frames={bg_frames is not None and len(bg_frames) if bg_frames else None}, element_frames={element_frames is not None and len(element_frames) if element_frames else None})")
 
-                        # Fallback: sample depth from background depth directly
+                        # Fallback: sample from background depth
                         if depth_val is None:
-                            if frame_idx == 0:
-                                print(f"[DEBUG] Frame 0: Using fallback - sampling background depth directly")
                             h, w = bg_depth_frame.shape[:2]
                             scale_x = w / 720
                             scale_y = h / 480
@@ -2815,7 +2775,6 @@ with gr.Blocks(css=css) as demo:
                             depth_x = max(0, min(w-1, depth_x))
                             depth_y = max(0, min(h-1, depth_y))
 
-                            # Get depth value (with small neighborhood for robustness)
                             radius = 3
                             y1 = max(0, depth_y - radius)
                             y2 = min(h, depth_y + radius + 1)
@@ -2826,7 +2785,21 @@ with gr.Blocks(css=css) as demo:
                             if len(valid_depths) > 0:
                                 depth_val = float(np.median(valid_depths))
                             else:
-                                depth_val = 5.0  # Default depth
+                                depth_val = 5.0
+
+                        sample_depths.append(depth_val)
+                        print(f"[DEBUG] Sample {sample_idx}: depth={depth_val:.3f}m")
+
+                    # Use median depth as constant depth for object
+                    constant_depth = float(np.median(sample_depths))
+                    print(f"[DEBUG] Using constant object depth: {constant_depth:.3f}m (median of {sample_depths})")
+                    status_lines.append(f"Object depth (constant): {constant_depth:.2f}m")
+
+                    # Second pass: lift all points using constant depth
+                    points_3d = []
+                    for frame_idx, (px, py) in enumerate(traj_2d_interpolated):
+                        # Use constant depth for object (prevents Z-axis drift)
+                        depth_val = constant_depth
 
                         # Lift to 3D
                         try:
