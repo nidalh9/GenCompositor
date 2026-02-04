@@ -41,9 +41,14 @@ class CameraConfig:
 class Camera:
     """Pinhole camera model for perspective projection"""
 
-    def __init__(self, config: CameraConfig):
+    def __init__(self, config: CameraConfig, debug: bool = False):
         self.config = config
+        self.debug = debug
         self._compute_matrices()
+        if debug:
+            print(f"[CAM DEBUG] Camera {config.angle}° initialized:")
+            print(f"  Position: ({self.position[0]:.3f}, {self.position[1]:.3f}, {self.position[2]:.3f})")
+            print(f"  Distance: {config.distance}, Height: {config.height}, FOV: {config.fov}")
 
     def _compute_matrices(self):
         """Compute view and projection matrices"""
@@ -133,12 +138,13 @@ class Camera:
         ])
         return K
 
-    def project_3d_to_2d(self, point_3d: np.ndarray) -> Optional[Tuple[int, int]]:
+    def project_3d_to_2d(self, point_3d: np.ndarray, debug_frame: int = -1) -> Optional[Tuple[int, int]]:
         """
         Project a 3D world point to 2D image coordinates.
 
         Args:
             point_3d: (x, y, z) world coordinates as numpy array
+            debug_frame: If >= 0, print debug info for this frame
 
         Returns:
             (u, v) pixel coordinates, or None if point is behind camera
@@ -149,10 +155,18 @@ class Camera:
         # World to camera transformation
         point_cam = self.view_matrix @ point_h
 
+        if debug_frame >= 0 and debug_frame < 3:
+            print(f"[PROJ DEBUG] Camera {self.config.angle}°, Frame {debug_frame}:")
+            print(f"  3D world: ({point_3d[0]:.3f}, {point_3d[1]:.3f}, {point_3d[2]:.3f})")
+            print(f"  Camera pos: ({self.position[0]:.3f}, {self.position[1]:.3f}, {self.position[2]:.3f})")
+            print(f"  Point in cam space: ({point_cam[0]:.3f}, {point_cam[1]:.3f}, {point_cam[2]:.3f})")
+
         # In our convention, camera looks along +z in camera space after transformation
         # Points in front of camera have positive z
         # Check if point is behind camera
         if point_cam[2] <= 0.01:  # Small epsilon to avoid division by zero
+            if debug_frame >= 0 and debug_frame < 3:
+                print(f"  BEHIND CAMERA (z={point_cam[2]:.3f})")
             return None
 
         # Project to image plane using intrinsics
@@ -160,9 +174,15 @@ class Camera:
         u = int(self.intrinsic_matrix[0, 0] * point_cam[0] / point_cam[2] + self.intrinsic_matrix[0, 2])
         v = int(self.intrinsic_matrix[1, 1] * point_cam[1] / point_cam[2] + self.intrinsic_matrix[1, 2])
 
+        if debug_frame >= 0 and debug_frame < 3:
+            print(f"  Before clamp: u={u}, v={v}")
+
         # Clamp to image bounds
         u = max(0, min(u, self.config.image_width - 1))
         v = max(0, min(v, self.config.image_height - 1))
+
+        if debug_frame >= 0 and debug_frame < 3:
+            print(f"  After clamp: u={u}, v={v}")
 
         return (u, v)
 
@@ -431,7 +451,8 @@ def interpolate_3d_trajectory(
 
 def project_trajectory_to_view(
     trajectory_3d: Trajectory3D,
-    camera_config: CameraConfig
+    camera_config: CameraConfig,
+    debug: bool = False
 ) -> List[Tuple[int, int]]:
     """
     Project a 3D trajectory to a single 2D camera view.
@@ -439,20 +460,24 @@ def project_trajectory_to_view(
     Args:
         trajectory_3d: 3D trajectory to project
         camera_config: Camera configuration for the view
+        debug: If True, print debug info for first few frames
 
     Returns:
         List of (u, v) 2D pixel coordinates
     """
-    camera = Camera(camera_config)
+    camera = Camera(camera_config, debug=debug)
     projected_points = []
 
     last_valid = (camera_config.image_width // 2, camera_config.image_height // 2)
 
-    for point_3d in trajectory_3d.points:
-        point_2d = camera.project_3d_to_2d(np.array(point_3d))
+    for idx, point_3d in enumerate(trajectory_3d.points):
+        debug_frame = idx if (debug and idx < 3) else -1
+        point_2d = camera.project_3d_to_2d(np.array(point_3d), debug_frame=debug_frame)
         if point_2d is None:
             # Point behind camera - use last valid point
             point_2d = last_valid
+            if debug and idx < 3:
+                print(f"  Using fallback point: {point_2d}")
         else:
             last_valid = point_2d
         projected_points.append(point_2d)
@@ -462,7 +487,8 @@ def project_trajectory_to_view(
 
 def project_trajectory_to_views(
     trajectory_3d: Trajectory3D,
-    camera_configs: List[CameraConfig]
+    camera_configs: List[CameraConfig],
+    debug: bool = True
 ) -> Dict[float, List[Tuple[int, int]]]:
     """
     Project a 3D trajectory to multiple 2D camera views.
@@ -470,6 +496,7 @@ def project_trajectory_to_views(
     Args:
         trajectory_3d: 3D trajectory to project
         camera_configs: List of camera configurations
+        debug: If True, print debug info for first few frames
 
     Returns:
         Dictionary mapping camera angle to list of 2D (u, v) coordinates
@@ -477,7 +504,9 @@ def project_trajectory_to_views(
     results = {}
 
     for config in camera_configs:
-        projected_points = project_trajectory_to_view(trajectory_3d, config)
+        if debug:
+            print(f"\n[PROJ DEBUG] ===== Projecting to Camera {config.angle}° =====")
+        projected_points = project_trajectory_to_view(trajectory_3d, config, debug=debug)
         results[config.angle] = projected_points
 
     return results

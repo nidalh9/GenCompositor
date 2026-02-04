@@ -2618,6 +2618,9 @@ with gr.Blocks(css=css) as demo:
             else:
                 traj_2d_interpolated = [(int(p[0]), int(p[1])) for p in traj_points_2d[:49]]
 
+            print(f"[DEBUG] Original 2D trajectory (View 0) - First 3 points: {traj_2d_interpolated[:3]}")
+            print(f"[DEBUG] Original 2D trajectory (View 0) - Last point: {traj_2d_interpolated[-1]}")
+
             # Load depth video for view 0 (required for depth completion)
             depth_video_0 = None
             if depth_0 is not None:
@@ -2634,7 +2637,8 @@ with gr.Blocks(css=css) as demo:
 
             # Create camera configurations
             camera_configs = get_camera_configs(distance=cam_dist, height=cam_h, fov=cam_fov)
-            cameras = [Camera(cfg) for cfg in camera_configs]
+            print(f"[DEBUG] Camera config: distance={cam_dist}, height={cam_h}, fov={cam_fov}")
+            cameras = [Camera(cfg, debug=True) for cfg in camera_configs]
 
             # Use pre-segmented videos if available
             segmented_vids = {0: seg_0, 90: seg_90, 180: seg_180, 270: seg_270}
@@ -2828,7 +2832,10 @@ with gr.Blocks(css=css) as demo:
                         try:
                             x_world, y_world, z_world = cameras[0].lift_2d_to_3d(px, py, depth_val)
                             points_3d.append((x_world, y_world, z_world))
-                        except ValueError:
+                            if frame_idx < 3 or frame_idx == len(traj_2d_interpolated) - 1:
+                                print(f"[DEBUG] Frame {frame_idx}: 2D=({px}, {py}), depth={depth_val:.3f}m -> 3D=({x_world:.3f}, {y_world:.3f}, {z_world:.3f})")
+                        except ValueError as ve:
+                            print(f"[DEBUG] Frame {frame_idx}: ValueError in lift_2d_to_3d: {ve}")
                             # Use previous point or default
                             if points_3d:
                                 points_3d.append(points_3d[-1])
@@ -2836,11 +2843,19 @@ with gr.Blocks(css=css) as demo:
                                 points_3d.append((0.0, 0.0, 0.0))
 
                     status_lines.append(f"Lifted to 3D: {len(points_3d)} points")
+                    print(f"[DEBUG] 3D trajectory sample (first 3 points): {points_3d[:3]}")
+                    print(f"[DEBUG] 3D trajectory sample (last point): {points_3d[-1]}")
 
                     # Create 3D trajectory and project to all views
                     trajectory_3d = Trajectory3D(points=points_3d, num_frames=len(points_3d))
                     projected = project_trajectory_to_views(trajectory_3d, camera_configs)
                     status_lines.append("Projected to all 4 views")
+
+                    # Debug: Show projected trajectories for each view
+                    for angle in [0, 90, 180, 270]:
+                        traj = projected[angle]
+                        print(f"[DEBUG] View {angle}°: First 3 projected points: {traj[:3]}")
+                        print(f"[DEBUG] View {angle}°: Last projected point: {traj[-1]}")
 
                 except Exception as e:
                     import traceback
