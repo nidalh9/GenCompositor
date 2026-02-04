@@ -2288,7 +2288,7 @@ with gr.Blocks(css=css) as demo:
                 camera_distance = gr.Number(label="Camera Distance (R)", value=3.94, minimum=1.0, maximum=50.0)
                 camera_height = gr.Number(label="Camera Height", value=0.69, minimum=-20.0, maximum=20.0)
                 camera_fov = gr.Number(label="FOV (degrees)", value=39.6, minimum=30.0, maximum=120.0)
-                mv_rescale = gr.Number(label="Rescale Factor", value=0.4, minimum=0.1, maximum=5.0)
+                mv_rescale = gr.Number(label="Rescale Factor", value=1.0, minimum=0.1, maximum=5.0)
                 mv_inference_steps = gr.Number(label="Inference Steps", value=10, minimum=1, maximum=100, step=1)
 
             with gr.Column(scale=2):
