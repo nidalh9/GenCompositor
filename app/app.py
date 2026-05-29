@@ -888,7 +888,7 @@ def draw_and_save_trajectory(source_video_path, trajectory_points_json, trajecto
     cap.release()
     if os.path.exists(adjusted_video):
         os.unlink(adjusted_video)
-    return vis_path, trajectory_txt_path, f"轨迹已保存至 {trajectory_txt_path}"
+    return vis_path, trajectory_txt_path, f"Trajectory saved to {trajectory_txt_path}"
 
 def load_trajectory(trajectory_path, camera_angle=None, camera_distance=10.0, camera_height=0.0, camera_fov=60.0):
     """
@@ -1949,20 +1949,33 @@ with gr.Blocks(css=css) as demo:
                     outputs=[bg_first_frame, trajectory_points, is_drawing, bg_status]
                 )
 
-                def process_trajectory(bg_video, points):
+                def process_trajectory(bg_video, points, current_run_folder):
                     if not bg_video:
-                        return None, None, None, "Please provide background video"
+                        return None, None, None, current_run_folder, "Please provide background video"
                     if not points:
-                        return None, None, None, "Please select at least one key point"
-                    temp_trajectory = tempfile.NamedTemporaryFile(suffix=".txt", delete=False).name
+                        return None, None, None, current_run_folder, "Please select at least one key point"
+                    if not current_run_folder:
+                        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                        current_run_folder = os.path.join("./results/runs", timestamp)
+                    ensure_directory_exists(current_run_folder)
+                    trajectory_txt_path = os.path.join(current_run_folder, "trajectory.txt")
                     points_json = json.dumps(points)
-                    vis_path, trajectory_path, status = draw_and_save_trajectory(bg_video, points_json, temp_trajectory)
-                    return vis_path, trajectory_path, vis_path, status
+                    vis_path, trajectory_path, status = draw_and_save_trajectory(
+                        bg_video, points_json, trajectory_txt_path
+                    )
+                    if trajectory_path:
+                        status = (
+                            f"Trajectory saved to {current_run_folder}\n"
+                            f"  - trajectory.txt (per-frame x,y)\n"
+                            f"  - trajectory_vis.jpg (overlay preview)\n"
+                            f"  - see ./app/results/trajectory.md for the file-format spec"
+                        )
+                    return vis_path, trajectory_path, vis_path, current_run_folder, status
 
                 btn_draw_trajectory.click(
                     fn=process_trajectory,
-                    inputs=[processed_bg_video, trajectory_points],
-                    outputs=[trajectory_vis_output, trajectory_file, trajectory_vis_output, bg_status]
+                    inputs=[processed_bg_video, trajectory_points, run_folder],
+                    outputs=[trajectory_vis_output, trajectory_file, trajectory_vis_output, run_folder, bg_status]
                 )
 
     def update_interface(use):
@@ -2080,27 +2093,35 @@ with gr.Blocks(css=css) as demo:
                     if not scales:
                         scales = [0.4]
                     if not fg_element or not bg_video or not trajectory_path:
-                        return None, None, "Please provide complete foreground element video, background video, and specified trajectory"
+                        return None, None, current_run_folder, "Please provide complete foreground element video, background video, and specified trajectory"
+                    if not current_run_folder:
+                        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                        current_run_folder = os.path.join("./results/runs", timestamp)
+                    ensure_directory_exists(current_run_folder)
                     temp_output = tempfile.NamedTemporaryFile(suffix=".mp4", delete=False).name
                     mask_video, status = generate_mask_video_with_trajectory(fg_element, bg_video, temp_output,
                                                                            trajectory_path, scales, alignment=alignment, run_folder=current_run_folder)
-                    return mask_video, mask_video, status
+                    return mask_video, mask_video, current_run_folder, status
 
                 btn_generate_mask.click(
                     fn=lambda fg, bg, traj, r1, r2, r3, r4, r5, rf: generate_final_mask(fg, bg, traj, [r1, r2, r3, r4, r5], rf, "center"),
                     inputs=[processed_fg_element, processed_bg_video, trajectory_file, rescale1, rescale2, rescale3, rescale4, rescale5, run_folder],
-                    outputs=[final_mask_output, final_mask_output_state, compose_status]
+                    outputs=[final_mask_output, final_mask_output_state, run_folder, compose_status]
                 )
 
                 btn_generate_upper_mask.click(
                     fn=lambda fg, bg, traj, r1, r2, r3, r4, r5, rf: generate_final_mask(fg, bg, traj, [r1, r2, r3, r4, r5], rf, "bottom"),
                     inputs=[processed_fg_element, processed_bg_video, trajectory_file, rescale1, rescale2, rescale3, rescale4, rescale5, run_folder],
-                    outputs=[final_mask_output, final_mask_output_state, compose_status]
+                    outputs=[final_mask_output, final_mask_output_state, run_folder, compose_status]
                 )
 
                 def compose_video(fg_element, bg_video, mask_video, inference_steps, current_run_folder):
                     if not fg_element or not bg_video or not mask_video:
-                        return None, "Please ensure that foreground element video, background video and final mask video are provided"
+                        return None, current_run_folder, "Please ensure that foreground element video, background video and final mask video are provided"
+                    if not current_run_folder:
+                        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                        current_run_folder = os.path.join("./results/runs", timestamp)
+                    ensure_directory_exists(current_run_folder)
                     temp_output = tempfile.NamedTemporaryFile(suffix=".mp4", delete=False).name
                     try:
                         output_path, status = generate_video(
@@ -2131,16 +2152,16 @@ with gr.Blocks(css=css) as demo:
                             id_adapter_resample_learnable_path=None,
                             run_folder=current_run_folder,
                         )
-                        return output_path, status
+                        return output_path, current_run_folder, status
                     except Exception as e:
-                        return None, f"Video compositing failed: {str(e)}"
+                        return None, current_run_folder, f"Video compositing failed: {str(e)}"
                     finally:
                         torch.cuda.empty_cache()
 
                 btn_compose_video.click(
                     fn=compose_video,
                     inputs=[processed_fg_element, processed_bg_video, final_mask_output_state, inference_steps_input, run_folder],
-                    outputs=[composed_video_output, compose_status]
+                    outputs=[composed_video_output, run_folder, compose_status]
                 )
 
         with gr.Column(scale=3):
